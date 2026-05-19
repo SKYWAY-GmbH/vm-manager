@@ -93,6 +93,27 @@ export interface KubeVirtVirtualMachineSnapshot {
   };
 }
 
+export interface KubeVirtVirtualMachineSnapshotContent {
+  metadata?: KubeMetadata;
+  spec?: {
+    virtualMachineSnapshotName?: string;
+    volumeBackups?: Array<{
+      volumeName?: string;
+      volumeSnapshotName?: string;
+      persistentVolumeClaim?: {
+        metadata?: KubeMetadata;
+        spec?: {
+          storageClassName?: string;
+          volumeName?: string;
+        };
+      };
+    }>;
+  };
+  status?: {
+    readyToUse?: boolean;
+  };
+}
+
 export interface KubeVirtVirtualMachineRestore {
   metadata?: KubeMetadata;
   spec?: {
@@ -109,6 +130,24 @@ export interface KubeVirtVirtualMachineRestore {
     deletedDataVolumes?: string[];
     restoreTime?: string;
   };
+}
+
+export interface KubeStorageVolumeSnapshotContent {
+  metadata?: KubeMetadata;
+  spec?: {
+    driver?: string;
+    source?: {
+      volumeHandle?: string;
+    };
+    volumeSnapshotRef?: {
+      name?: string;
+      namespace?: string;
+    };
+  };
+}
+
+export interface KubeLonghornVolume {
+  metadata?: KubeMetadata;
 }
 
 export interface VmOperation {
@@ -144,6 +183,7 @@ export interface VirtualMachineSnapshotSummary {
   readyToUse: boolean | null;
   phase: string;
   message?: string;
+  restoreBlockedReason?: string;
   conditions: KubeCondition[];
 }
 

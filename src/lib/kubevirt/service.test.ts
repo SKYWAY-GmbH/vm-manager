@@ -17,7 +17,11 @@ vi.mock("./client", () => ({
   requestKubeJson: rawKubeRequest,
 }));
 
-import { createVirtualMachineRestore, performVirtualMachineAction } from "./service";
+import {
+  createVirtualMachineRestore,
+  getVirtualMachine,
+  performVirtualMachineAction,
+} from "./service";
 import type { KubeVirtVirtualMachineInstance } from "./types";
 
 function notFoundError() {
@@ -117,6 +121,62 @@ describe("createVirtualMachineRestore", () => {
 
     expect(client.deleteNamespacedCustomObject).not.toHaveBeenCalled();
     expect(client.createNamespacedCustomObject).toHaveBeenCalled();
+  });
+
+  it("marks snapshots with missing Longhorn source volumes as not restorable", async () => {
+    setupRestore(["not-found"]);
+    client.listNamespacedCustomObject.mockImplementation(({ plural }: { plural: string }) => {
+      if (plural === "virtualmachinesnapshots") {
+        return Promise.resolve({ items: [readySnapshot] });
+      }
+
+      if (plural === "virtualmachinerestores") {
+        return Promise.resolve({ items: [] });
+      }
+
+      if (plural === "virtualmachinesnapshotcontents") {
+        return Promise.resolve({
+          items: [
+            {
+              spec: {
+                virtualMachineSnapshotName: "snap-a",
+                volumeBackups: [
+                  {
+                    volumeName: "persistent-state-for-vm-01",
+                    volumeSnapshotName: "vmsnapshot-a",
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+
+      if (plural === "volumes") {
+        return Promise.resolve({ items: [{ metadata: { name: "other-volume" } }] });
+      }
+
+      return Promise.resolve({ items: [] });
+    });
+    client.listCustomObjectForAllNamespaces.mockResolvedValue({
+      items: [
+        {
+          spec: {
+            driver: "driver.longhorn.io",
+            source: { volumeHandle: "missing-volume" },
+            volumeSnapshotRef: { namespace: "windows", name: "vmsnapshot-a" },
+          },
+        },
+      ],
+    });
+
+    const detail = await getVirtualMachine("windows", "vm-01");
+    expect(detail.snapshots[0]?.restoreBlockedReason).toContain("Longhorn volume");
+
+    await expect(
+      createVirtualMachineRestore("windows", "vm-01", "snap-a", "restore-a"),
+    ).rejects.toThrow("cannot be restored");
+    expect(client.createNamespacedCustomObject).not.toHaveBeenCalled();
   });
 });
 

@@ -5,11 +5,14 @@ import { ApiError, getErrorStatus } from "./errors";
 import { isManagedVirtualMachine } from "./management";
 import { objectKey, toRestoreSummary, toSnapshotSummary, toVmSummary } from "./status";
 import type {
+  KubeLonghornVolume,
   KubeObjectList,
+  KubeStorageVolumeSnapshotContent,
   KubeVirtVirtualMachine,
   KubeVirtVirtualMachineInstance,
   KubeVirtVirtualMachineRestore,
   KubeVirtVirtualMachineSnapshot,
+  KubeVirtVirtualMachineSnapshotContent,
   VirtualMachineDetail,
   VirtualMachineRestoreSummary,
   VirtualMachineSnapshotSummary,
@@ -17,6 +20,7 @@ import type {
   VmAction,
 } from "./types";
 import {
+  hasActiveRestore,
   snapshotNameSchema,
   validateActionForVm,
   validateRestorePreconditions,
@@ -27,11 +31,21 @@ const KUBEVIRT_GROUP = "kubevirt.io";
 const KUBEVIRT_VERSION = "v1";
 const SNAPSHOT_GROUP = "snapshot.kubevirt.io";
 const SNAPSHOT_VERSION = "v1beta1";
+const STORAGE_SNAPSHOT_GROUP = "snapshot.storage.k8s.io";
+const STORAGE_SNAPSHOT_VERSION = "v1";
+const LONGHORN_GROUP = "longhorn.io";
+const LONGHORN_VERSION = "v1beta2";
+const LONGHORN_NAMESPACE = "longhorn-system";
+const LONGHORN_CSI_DRIVER = "driver.longhorn.io";
 const SUBRESOURCE_GROUP = "subresources.kubevirt.io";
 const RESTORE_TARGET_WAIT_TIMEOUT_MS = 60_000;
 const RESTORE_TARGET_WAIT_INTERVAL_MS = 1_000;
 
 function items<T>(response: unknown): T[] {
+  if (typeof response !== "object" || response === null) {
+    return [];
+  }
+
   return ((response as KubeObjectList<T>).items ?? []).filter(Boolean);
 }
 
@@ -130,6 +144,17 @@ async function listSnapshots(namespace?: string): Promise<KubeVirtVirtualMachine
   });
 }
 
+async function listSnapshotContents(
+  namespace?: string,
+): Promise<KubeVirtVirtualMachineSnapshotContent[]> {
+  return optionalList<KubeVirtVirtualMachineSnapshotContent>({
+    group: SNAPSHOT_GROUP,
+    version: SNAPSHOT_VERSION,
+    plural: "virtualmachinesnapshotcontents",
+    namespace,
+  });
+}
+
 async function listRestores(namespace?: string): Promise<KubeVirtVirtualMachineRestore[]> {
   return optionalList<KubeVirtVirtualMachineRestore>({
     group: SNAPSHOT_GROUP,
@@ -139,12 +164,105 @@ async function listRestores(namespace?: string): Promise<KubeVirtVirtualMachineR
   });
 }
 
+async function listVolumeSnapshotContents(): Promise<KubeStorageVolumeSnapshotContent[]> {
+  return optionalList<KubeStorageVolumeSnapshotContent>({
+    group: STORAGE_SNAPSHOT_GROUP,
+    version: STORAGE_SNAPSHOT_VERSION,
+    plural: "volumesnapshotcontents",
+  });
+}
+
+async function listLonghornVolumes(): Promise<KubeLonghornVolume[]> {
+  return optionalList<KubeLonghornVolume>({
+    group: LONGHORN_GROUP,
+    version: LONGHORN_VERSION,
+    namespace: LONGHORN_NAMESPACE,
+    plural: "volumes",
+  });
+}
+
 function toVmiMap(vmis: KubeVirtVirtualMachineInstance[]) {
   return new Map(
     vmis
       .filter((vmi) => vmi.metadata?.namespace && vmi.metadata.name)
       .map((vmi) => [objectKey(vmi.metadata?.namespace ?? "", vmi.metadata?.name ?? ""), vmi]),
   );
+}
+
+function volumeSnapshotContentKey(namespace: string | undefined, name: string | undefined) {
+  return namespace && name ? objectKey(namespace, name) : undefined;
+}
+
+function snapshotStorageRestoreBlockers(
+  namespace: string,
+  snapshotContents: KubeVirtVirtualMachineSnapshotContent[],
+  volumeSnapshotContents: KubeStorageVolumeSnapshotContent[],
+  longhornVolumes: KubeLonghornVolume[],
+) {
+  const longhornVolumeNames = new Set<string>();
+  for (const volume of longhornVolumes) {
+    if (volume.metadata?.name) {
+      longhornVolumeNames.add(volume.metadata.name);
+    }
+  }
+
+  if (longhornVolumeNames.size === 0 || volumeSnapshotContents.length === 0) {
+    return new Map<string, string>();
+  }
+
+  const volumeSnapshotContentEntries: Array<readonly [string, KubeStorageVolumeSnapshotContent]> =
+    [];
+  for (const content of volumeSnapshotContents) {
+    const key = volumeSnapshotContentKey(
+      content.spec?.volumeSnapshotRef?.namespace,
+      content.spec?.volumeSnapshotRef?.name,
+    );
+    if (key) {
+      volumeSnapshotContentEntries.push([key, content]);
+    }
+  }
+  const volumeSnapshotContentByRef = new Map(volumeSnapshotContentEntries);
+  const blockers = new Map<string, string>();
+
+  for (const content of snapshotContents) {
+    const snapshotName = content.spec?.virtualMachineSnapshotName;
+    if (!snapshotName || blockers.has(snapshotName)) {
+      continue;
+    }
+
+    for (const backup of content.spec?.volumeBackups ?? []) {
+      const volumeSnapshotContent = volumeSnapshotContentByRef.get(
+        objectKey(namespace, backup.volumeSnapshotName ?? ""),
+      );
+      if (volumeSnapshotContent?.spec?.driver !== LONGHORN_CSI_DRIVER) {
+        continue;
+      }
+
+      const sourceVolume = volumeSnapshotContent.spec.source?.volumeHandle;
+      if (!sourceVolume || longhornVolumeNames.has(sourceVolume)) {
+        continue;
+      }
+
+      const volumeName = backup.volumeName ?? backup.persistentVolumeClaim?.metadata?.name;
+      blockers.set(
+        snapshotName,
+        `The underlying Longhorn volume for ${volumeName ?? "one snapshot disk"} is missing, so this snapshot cannot be restored.`,
+      );
+      break;
+    }
+  }
+
+  return blockers;
+}
+
+function applySnapshotRestoreBlockers(
+  snapshots: VirtualMachineSnapshotSummary[],
+  blockers: Map<string, string>,
+): VirtualMachineSnapshotSummary[] {
+  return snapshots.map((snapshot) => ({
+    ...snapshot,
+    restoreBlockedReason: blockers.get(snapshot.name),
+  }));
 }
 
 function filterSnapshotSummariesForVm(
@@ -293,15 +411,28 @@ export async function getVirtualMachine(
   namespace: string,
   name: string,
 ): Promise<VirtualMachineDetail> {
-  const [summary, snapshots, restores] = await Promise.all([
-    getVirtualMachineSummary(namespace, name),
-    listSnapshots(namespace),
-    listRestores(namespace),
-  ]);
+  const [summary, snapshots, restores, snapshotContents, volumeSnapshotContents, longhornVolumes] =
+    await Promise.all([
+      getVirtualMachineSummary(namespace, name),
+      listSnapshots(namespace),
+      listRestores(namespace),
+      listSnapshotContents(namespace),
+      listVolumeSnapshotContents(),
+      listLonghornVolumes(),
+    ]);
+  const snapshotRestoreBlockers = snapshotStorageRestoreBlockers(
+    namespace,
+    snapshotContents,
+    volumeSnapshotContents,
+    longhornVolumes,
+  );
 
   return {
     ...summary,
-    snapshots: filterSnapshotSummariesForVm(snapshots, name),
+    snapshots: applySnapshotRestoreBlockers(
+      filterSnapshotSummariesForVm(snapshots, name),
+      snapshotRestoreBlockers,
+    ),
     restores: filterRestoreSummariesForVm(restores, name),
   };
 }
@@ -359,6 +490,14 @@ export async function createVirtualMachineSnapshot(
   snapshotName: string,
 ): Promise<VirtualMachineSnapshotSummary> {
   const name = snapshotNameSchema.parse(snapshotName);
+  const vm = await getVirtualMachineSummary(namespace, vmName);
+  if (hasActiveRestore(vm)) {
+    throw new ApiError(
+      409,
+      "A restore is in progress. Wait until it finishes before creating a snapshot.",
+    );
+  }
+
   const response = (await getCustomObjectsClient().createNamespacedCustomObject({
     group: SNAPSHOT_GROUP,
     version: SNAPSHOT_VERSION,

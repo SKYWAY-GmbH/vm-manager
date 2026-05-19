@@ -198,7 +198,7 @@ export function VmOverview({
         ) : null}
       </section>
 
-      <p className="text-muted-foreground text-xs">Inventory refreshes every 5 seconds.</p>
+      <p className="text-muted-foreground text-xs">Inventory refreshes every second.</p>
     </div>
   );
 }

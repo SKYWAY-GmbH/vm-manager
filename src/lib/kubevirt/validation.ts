@@ -38,7 +38,18 @@ export function validateSnapshotName(name: string): ValidationResult {
   return { ok: false, reason: result.error.issues[0]?.message ?? "Invalid snapshot name." };
 }
 
+export function hasActiveRestore(vm: VirtualMachineSummary): boolean {
+  return vm.activeOperations.some((operation) => operation.type === "restore");
+}
+
 export function validateActionForVm(action: VmAction, vm: VirtualMachineSummary): ValidationResult {
+  if (hasActiveRestore(vm)) {
+    return {
+      ok: false,
+      reason: "A restore is in progress. Wait until it finishes before changing VM power.",
+    };
+  }
+
   if (action === "start") {
     if (vm.powerState !== "offline") {
       return { ok: false, reason: "Only stopped VMs can be started." };
@@ -78,12 +89,20 @@ export function validateRestorePreconditions(
     return { ok: false, reason: "Snapshot not found." };
   }
 
+  if (hasActiveRestore(vm)) {
+    return { ok: false, reason: "A restore is already in progress." };
+  }
+
   if (vm.powerState !== "offline") {
     return { ok: false, reason: "Stop the VM before restoring a snapshot." };
   }
 
   if (snapshot.readyToUse !== true) {
     return { ok: false, reason: "Only ready snapshots can be restored." };
+  }
+
+  if (snapshot.restoreBlockedReason) {
+    return { ok: false, reason: snapshot.restoreBlockedReason };
   }
 
   return { ok: true };

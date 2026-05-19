@@ -32,7 +32,11 @@ import type {
   VirtualMachineDetail,
   VirtualMachineSnapshotSummary,
 } from "@/lib/kubevirt/types";
-import { validateRestorePreconditions, validateSnapshotName } from "@/lib/kubevirt/validation";
+import {
+  hasActiveRestore,
+  validateRestorePreconditions,
+  validateSnapshotName,
+} from "@/lib/kubevirt/validation";
 import { cn } from "@/lib/utils";
 
 function baseEndpoint(vm: VirtualMachineDetail) {
@@ -61,6 +65,10 @@ function restoreDisabledMessage(vm: VirtualMachineDetail, validation: Validation
 }
 
 function snapshotStatus(snapshot: VirtualMachineSnapshotSummary) {
+  if (snapshot.restoreBlockedReason) {
+    return `Not restorable: ${snapshot.restoreBlockedReason}`;
+  }
+
   if (snapshot.message) {
     return snapshot.message;
   }
@@ -121,11 +129,20 @@ export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
   const [restoreTarget, setRestoreTarget] = useState<VirtualMachineSnapshotSummary | null>(null);
   const [isPending, startTransition] = useTransition();
   const snapshotValidation = useMemo(() => validateSnapshotName(snapshotName), [snapshotName]);
+  const restoreInProgress = hasActiveRestore(vm);
+  const snapshotCreateBlockedReason = restoreInProgress
+    ? "A restore is in progress. Wait until it finishes before creating a snapshot."
+    : undefined;
 
   function createSnapshot(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!snapshotValidation.ok) {
       toast.error(snapshotValidation.reason);
+      return;
+    }
+
+    if (snapshotCreateBlockedReason) {
+      toast.error(snapshotCreateBlockedReason);
       return;
     }
 
@@ -210,8 +227,16 @@ export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
             {!snapshotValidation.ok ? (
               <p className="text-destructive text-xs">{snapshotValidation.reason}</p>
             ) : null}
+            {snapshotCreateBlockedReason ? (
+              <p className="text-muted-foreground text-xs">{snapshotCreateBlockedReason}</p>
+            ) : null}
           </div>
-          <Button type="submit" className="self-end" disabled={isPending || !snapshotValidation.ok}>
+          <Button
+            type="submit"
+            className="self-end"
+            disabled={isPending || !snapshotValidation.ok || restoreInProgress}
+            title={snapshotCreateBlockedReason}
+          >
             {isPending ? (
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             ) : (

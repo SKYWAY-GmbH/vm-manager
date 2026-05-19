@@ -126,6 +126,10 @@ function latestConditionMessage(conditions: KubeCondition[] | undefined): string
   return conditions?.find((condition) => condition.message)?.message;
 }
 
+function conditionText(condition: KubeCondition | undefined): string | undefined {
+  return condition?.message ?? condition?.reason;
+}
+
 function snapshotMessage(snapshot: KubeVirtVirtualMachineSnapshot): string | undefined {
   return (
     snapshot.status?.error?.message ??
@@ -135,7 +139,19 @@ function snapshotMessage(snapshot: KubeVirtVirtualMachineSnapshot): string | und
 }
 
 function restoreMessage(restore: KubeVirtVirtualMachineRestore): string | undefined {
-  return latestConditionMessage(restore.status?.conditions);
+  const conditions = restore.status?.conditions;
+  const failedCondition = conditions?.find(
+    (condition) => condition.type === "Failure" && condition.status === "True",
+  );
+  const blockingReadyCondition = conditions?.find(
+    (condition) => condition.type === "Ready" && condition.status === "False",
+  );
+
+  return (
+    conditionText(failedCondition) ??
+    conditionText(blockingReadyCondition) ??
+    latestConditionMessage(conditions)
+  );
 }
 
 function snapshotMatchesVm(snapshot: KubeVirtVirtualMachineSnapshot, vmName: string) {

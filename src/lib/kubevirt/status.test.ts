@@ -124,6 +124,28 @@ describe("snapshot and restore summaries", () => {
     });
   });
 
+  it("uses restore condition reasons when no message is present", () => {
+    const restore = toRestoreSummary({
+      metadata: { name: "restore-a", namespace: "windows" },
+      spec: {
+        target: { kind: "VirtualMachine", name: "vm-01" },
+        virtualMachineSnapshotName: "snap-a",
+      },
+      status: {
+        complete: false,
+        conditions: [
+          { type: "Progressing", status: "True", reason: "Creating new PVCs" },
+          { type: "Ready", status: "False", reason: "Waiting for new PVCs" },
+        ],
+      },
+    });
+
+    expect(restore).toMatchObject({
+      phase: "Running",
+      message: "Waiting for new PVCs",
+    });
+  });
+
   it("filters active operations to pending snapshots and restores", () => {
     const snapshots: KubeVirtVirtualMachineSnapshot[] = [
       {

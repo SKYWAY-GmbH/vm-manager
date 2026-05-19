@@ -6,7 +6,10 @@ import {
   validateSnapshotName,
 } from "./validation";
 
-function vm(powerState: VirtualMachineSummary["powerState"]): VirtualMachineSummary {
+function vm(
+  powerState: VirtualMachineSummary["powerState"],
+  activeOperations: VirtualMachineSummary["activeOperations"] = [],
+): VirtualMachineSummary {
   return {
     id: "windows/vm-01",
     name: "vm-01",
@@ -17,7 +20,7 @@ function vm(powerState: VirtualMachineSummary["powerState"]): VirtualMachineSumm
     ipAddresses: [],
     runStrategy: "Manual",
     conditions: [],
-    activeOperations: [],
+    activeOperations,
   };
 }
 
@@ -60,6 +63,18 @@ describe("action validation", () => {
     expect(validateActionForVm("stop", vm("offline")).ok).toBe(false);
     expect(validateActionForVm("force-stop", vm("unknown")).ok).toBe(false);
   });
+
+  it("blocks power changes while a restore is active", () => {
+    const restoringVm = vm("offline", [{ type: "restore", name: "restore-a", phase: "Running" }]);
+
+    expect(validateActionForVm("start", restoringVm)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("restore is in progress"),
+    });
+    expect(validateActionForVm("stop", restoringVm).ok).toBe(false);
+    expect(validateActionForVm("reboot", restoringVm).ok).toBe(false);
+    expect(validateActionForVm("force-stop", restoringVm).ok).toBe(false);
+  });
 });
 
 describe("restore preconditions", () => {
@@ -75,5 +90,29 @@ describe("restore preconditions", () => {
         readyToUse: false,
       }).ok,
     ).toBe(false);
+  });
+
+  it("blocks restores while another restore is active", () => {
+    expect(
+      validateRestorePreconditions(
+        vm("offline", [{ type: "restore", name: "restore-a", phase: "Running" }]),
+        readySnapshot,
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: "A restore is already in progress.",
+    });
+  });
+
+  it("blocks snapshots marked as not restorable", () => {
+    expect(
+      validateRestorePreconditions(vm("offline"), {
+        ...readySnapshot,
+        restoreBlockedReason: "The underlying volume is missing.",
+      }),
+    ).toMatchObject({
+      ok: false,
+      reason: "The underlying volume is missing.",
+    });
   });
 });
