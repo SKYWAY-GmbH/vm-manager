@@ -21,12 +21,15 @@ import {
   validateActionForVm,
   validateRestorePreconditions,
 } from "./validation";
+import { getVmiPhase, isTerminalVmi } from "./vmi";
 
 const KUBEVIRT_GROUP = "kubevirt.io";
 const KUBEVIRT_VERSION = "v1";
 const SNAPSHOT_GROUP = "snapshot.kubevirt.io";
 const SNAPSHOT_VERSION = "v1beta1";
 const SUBRESOURCE_GROUP = "subresources.kubevirt.io";
+const RESTORE_TARGET_WAIT_TIMEOUT_MS = 60_000;
+const RESTORE_TARGET_WAIT_INTERVAL_MS = 1_000;
 
 function items<T>(response: unknown): T[] {
   return ((response as KubeObjectList<T>).items ?? []).filter(Boolean);
@@ -176,6 +179,70 @@ function buildRestoreName(vmName: string) {
 
 function encodeSegment(value: string) {
   return encodeURIComponent(value);
+}
+
+function sleep(milliseconds: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+async function deleteTerminalVmi(namespace: string, name: string) {
+  try {
+    await getCustomObjectsClient().deleteNamespacedCustomObject({
+      group: KUBEVIRT_GROUP,
+      version: KUBEVIRT_VERSION,
+      namespace,
+      plural: "virtualmachineinstances",
+      name,
+      gracePeriodSeconds: 0,
+      propagationPolicy: "Background",
+      body: {
+        apiVersion: "v1",
+        kind: "DeleteOptions",
+        gracePeriodSeconds: 0,
+        propagationPolicy: "Background",
+      },
+    });
+  } catch (error) {
+    if (!isNotFound(error)) {
+      throw error;
+    }
+  }
+}
+
+async function waitForRestoreTargetVmiToDisappear(namespace: string, name: string) {
+  const deadline = Date.now() + RESTORE_TARGET_WAIT_TIMEOUT_MS;
+  let deletedTerminalVmi = false;
+  let lastPhase: string | undefined;
+
+  while (Date.now() <= deadline) {
+    const vmi = await readOptionalNamespaced<KubeVirtVirtualMachineInstance>(
+      namespace,
+      name,
+      "virtualmachineinstances",
+    );
+
+    if (!vmi) {
+      return;
+    }
+
+    lastPhase = getVmiPhase(vmi);
+
+    if (isTerminalVmi(vmi)) {
+      if (!deletedTerminalVmi) {
+        await deleteTerminalVmi(namespace, name);
+        deletedTerminalVmi = true;
+      }
+    }
+
+    await sleep(RESTORE_TARGET_WAIT_INTERVAL_MS);
+  }
+
+  throw new ApiError(
+    409,
+    `The VM is stopped, but Kubernetes still reports an existing instance${lastPhase ? ` in ${lastPhase} phase` : ""}. Try restoring again in a moment.`,
+  );
 }
 
 async function getVirtualMachineSummary(
@@ -341,6 +408,8 @@ export async function createVirtualMachineRestore(
   if (!validation.ok) {
     throw new ApiError(409, validation.reason ?? "Snapshot restore is not allowed.");
   }
+
+  await waitForRestoreTargetVmiToDisappear(namespace, vmName);
 
   const response = (await getCustomObjectsClient().createNamespacedCustomObject({
     group: SNAPSHOT_GROUP,

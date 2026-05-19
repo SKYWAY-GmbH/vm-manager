@@ -3,7 +3,6 @@
 import { ArrowRight, Search } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { PowerStateBadge, ReadinessBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -14,31 +13,49 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { VmActionMenu } from "@/components/vm-action-menu";
-import { formatIpList } from "@/lib/format";
-import type { VirtualMachineSummary } from "@/lib/kubevirt/types";
+import { VmActionButtons } from "@/components/vm-action-menu";
+import { formatElapsedSince, formatReady } from "@/lib/format";
+import type { VirtualMachineSummary, VmPowerState } from "@/lib/kubevirt/types";
+import { cn } from "@/lib/utils";
 
 function vmHref(vm: VirtualMachineSummary) {
   return `/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}`;
 }
 
-function operationLabel(vm: VirtualMachineSummary) {
+function activityLabel(vm: VirtualMachineSummary) {
   if (vm.activeOperations.length === 0) {
-    return "None";
+    return "Idle";
   }
 
-  return vm.activeOperations.map((operation) => `${operation.type}: ${operation.phase}`).join(", ");
+  return vm.activeOperations
+    .map((operation) => {
+      const type = operation.type === "restore" ? "Restore" : "Snapshot";
+      const elapsed = operation.createdAt ? `, ${formatElapsedSince(operation.createdAt)}` : "";
+      return `${type}: ${operation.phase}${elapsed}`;
+    })
+    .join(", ");
+}
+
+const lifecycleTextClasses: Record<VmPowerState, string> = {
+  online: "text-emerald-200",
+  offline: "text-stone-300",
+  transitioning: "text-amber-200",
+  unknown: "text-zinc-300",
+};
+
+function VmLifecycleText({ vm }: { vm: VirtualMachineSummary }) {
+  return (
+    <div className="space-y-0.5">
+      <p className={cn("font-medium text-sm", lifecycleTextClasses[vm.powerState])}>
+        {vm.printableStatus}
+      </p>
+      <p className="text-muted-foreground text-xs">{formatReady(vm.ready)}</p>
+    </div>
+  );
 }
 
 function matchesVm(vm: VirtualMachineSummary, query: string) {
-  const haystack = [
-    vm.name,
-    vm.namespace,
-    vm.printableStatus,
-    vm.runStrategy,
-    vm.nodeName,
-    ...vm.ipAddresses,
-  ]
+  const haystack = [vm.name, vm.namespace, vm.printableStatus, vm.nodeName, activityLabel(vm)]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -101,13 +118,10 @@ export function VmOverview({
             <TableHeader>
               <TableRow>
                 <TableHead>VM</TableHead>
-                <TableHead>State</TableHead>
-                <TableHead>Readiness</TableHead>
+                <TableHead>Lifecycle</TableHead>
                 <TableHead>Node</TableHead>
-                <TableHead>IP</TableHead>
-                <TableHead>Run strategy</TableHead>
-                <TableHead>Operations</TableHead>
-                <TableHead className="w-20 text-right">Actions</TableHead>
+                <TableHead>Activity</TableHead>
+                <TableHead className="w-[24rem] text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -122,24 +136,14 @@ export function VmOverview({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <div className="flex flex-col gap-1">
-                      <PowerStateBadge state={vm.powerState} />
-                      <span className="text-muted-foreground text-xs">{vm.printableStatus}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <ReadinessBadge ready={vm.ready} />
+                    <VmLifecycleText vm={vm} />
                   </TableCell>
                   <TableCell className="text-sm">{vm.nodeName ?? "Unscheduled"}</TableCell>
-                  <TableCell className="max-w-52 truncate font-mono text-xs">
-                    {formatIpList(vm.ipAddresses)}
-                  </TableCell>
-                  <TableCell className="text-sm">{vm.runStrategy}</TableCell>
                   <TableCell className="max-w-56 truncate text-muted-foreground text-sm">
-                    {operationLabel(vm)}
+                    {activityLabel(vm)}
                   </TableCell>
                   <TableCell className="text-right">
-                    <VmActionMenu vm={vm} />
+                    <VmActionButtons vm={vm} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -157,24 +161,20 @@ export function VmOverview({
                   </Link>
                   <p className="text-muted-foreground text-xs">{vm.namespace}</p>
                 </div>
-                <VmActionMenu vm={vm} />
               </div>
+              <VmActionButtons vm={vm} className="justify-start" />
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div className="space-y-1">
-                  <p className="text-muted-foreground text-xs">State</p>
-                  <PowerStateBadge state={vm.powerState} />
-                </div>
-                <div className="space-y-1">
-                  <p className="text-muted-foreground text-xs">Readiness</p>
-                  <ReadinessBadge ready={vm.ready} />
+                  <p className="text-muted-foreground text-xs">Lifecycle</p>
+                  <VmLifecycleText vm={vm} />
                 </div>
                 <div className="min-w-0">
                   <p className="text-muted-foreground text-xs">Node</p>
                   <p className="truncate">{vm.nodeName ?? "Unscheduled"}</p>
                 </div>
                 <div className="min-w-0">
-                  <p className="text-muted-foreground text-xs">IP</p>
-                  <p className="truncate font-mono text-xs">{formatIpList(vm.ipAddresses)}</p>
+                  <p className="text-muted-foreground text-xs">Activity</p>
+                  <p className="truncate">{activityLabel(vm)}</p>
                 </div>
               </div>
               <Button asChild variant="outline" size="sm" className="w-full">

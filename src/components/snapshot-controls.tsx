@@ -4,7 +4,6 @@ import { Camera, Loader2, RotateCcw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
-import { SnapshotReadyBadge } from "@/components/status-badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,9 +25,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDateTime } from "@/lib/format";
-import type { VirtualMachineDetail, VirtualMachineSnapshotSummary } from "@/lib/kubevirt/types";
+import type {
+  ValidationResult,
+  VirtualMachineDetail,
+  VirtualMachineSnapshotSummary,
+} from "@/lib/kubevirt/types";
 import { validateRestorePreconditions, validateSnapshotName } from "@/lib/kubevirt/validation";
+import { cn } from "@/lib/utils";
 
 function baseEndpoint(vm: VirtualMachineDetail) {
   return `/api/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}`;
@@ -43,8 +48,75 @@ function defaultSnapshotName(vmName: string) {
   return `${vmName}-snapshot-${stamp}`.slice(0, 253);
 }
 
+function restoreDisabledMessage(vm: VirtualMachineDetail, validation: ValidationResult) {
+  if (validation.ok) {
+    return undefined;
+  }
+
+  if (vm.powerState !== "offline") {
+    return "Disabled while the machine is running. Stop the VM before restoring a snapshot.";
+  }
+
+  return validation.reason;
+}
+
+function snapshotStatus(snapshot: VirtualMachineSnapshotSummary) {
+  if (snapshot.message) {
+    return snapshot.message;
+  }
+
+  if (snapshot.readyToUse === true) {
+    return "Ready";
+  }
+
+  if (snapshot.readyToUse === false) {
+    return snapshot.phase === "Succeeded" ? "Not ready" : snapshot.phase;
+  }
+
+  return snapshot.phase;
+}
+
+function SnapshotRestoreButton({
+  snapshot,
+  validation,
+  disabledMessage,
+  isPending,
+  className,
+  onRestore,
+}: {
+  snapshot: VirtualMachineSnapshotSummary;
+  validation: ValidationResult;
+  disabledMessage?: string;
+  isPending: boolean;
+  className?: string;
+  onRestore: (snapshot: VirtualMachineSnapshotSummary) => void;
+}) {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className={cn("inline-flex", className)}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isPending || !validation.ok}
+              title={disabledMessage}
+              className={cn(className && "w-full")}
+              onClick={() => onRestore(snapshot)}
+            >
+              <RotateCcw className="size-4" aria-hidden="true" />
+              Restore
+            </Button>
+          </span>
+        </TooltipTrigger>
+        {disabledMessage ? <TooltipContent>{disabledMessage}</TooltipContent> : null}
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
-  const router = useRouter();
+  const { refresh } = useRouter();
   const [snapshotName, setSnapshotName] = useState(() => defaultSnapshotName(vm.name));
   const [restoreTarget, setRestoreTarget] = useState<VirtualMachineSnapshotSummary | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -77,7 +149,7 @@ export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
 
         toast.success(`Snapshot ${snapshotName} created.`);
         setSnapshotName(defaultSnapshotName(vm.name));
-        router.refresh();
+        refresh();
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Snapshot creation failed.");
       }
@@ -110,7 +182,7 @@ export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
         }
 
         toast.success(`Restore submitted from ${snapshot.name}.`);
-        router.refresh();
+        refresh();
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Snapshot restore failed.");
       }
@@ -149,13 +221,12 @@ export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
           </Button>
         </form>
 
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Ready</TableHead>
-                <TableHead>Phase</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead className="w-28 text-right">Restore</TableHead>
               </TableRow>
@@ -163,34 +234,55 @@ export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
             <TableBody>
               {vm.snapshots.map((snapshot) => {
                 const validation = validateRestorePreconditions(vm, snapshot);
+                const disabledMessage = restoreDisabledMessage(vm, validation);
                 return (
                   <TableRow key={snapshot.name}>
                     <TableCell className="font-medium">{snapshot.name}</TableCell>
-                    <TableCell>
-                      <SnapshotReadyBadge ready={snapshot.readyToUse} />
-                    </TableCell>
                     <TableCell className="text-muted-foreground text-sm">
-                      {snapshot.message ?? snapshot.phase}
+                      {snapshotStatus(snapshot)}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-sm">
                       {formatDateTime(snapshot.createdAt)}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={isPending || !validation.ok}
-                        onClick={() => setRestoreTarget(snapshot)}
-                      >
-                        <RotateCcw className="size-4" aria-hidden="true" />
-                        Apply
-                      </Button>
+                      <SnapshotRestoreButton
+                        snapshot={snapshot}
+                        validation={validation}
+                        disabledMessage={disabledMessage}
+                        isPending={isPending}
+                        onRestore={setRestoreTarget}
+                      />
                     </TableCell>
                   </TableRow>
                 );
               })}
             </TableBody>
           </Table>
+        </div>
+
+        <div className="divide-y divide-border md:hidden">
+          {vm.snapshots.map((snapshot) => {
+            const validation = validateRestorePreconditions(vm, snapshot);
+            const disabledMessage = restoreDisabledMessage(vm, validation);
+            return (
+              <div key={snapshot.name} className="space-y-3 p-4">
+                <div className="min-w-0">
+                  <p className="break-words font-medium text-sm">{snapshot.name}</p>
+                  <p className="mt-1 text-muted-foreground text-xs">
+                    {snapshotStatus(snapshot)} - {formatDateTime(snapshot.createdAt)}
+                  </p>
+                </div>
+                <SnapshotRestoreButton
+                  snapshot={snapshot}
+                  validation={validation}
+                  disabledMessage={disabledMessage}
+                  isPending={isPending}
+                  className="w-full"
+                  onRestore={setRestoreTarget}
+                />
+              </div>
+            );
+          })}
         </div>
 
         {vm.snapshots.length === 0 ? (
@@ -210,7 +302,7 @@ export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apply snapshot?</AlertDialogTitle>
+            <AlertDialogTitle>Restore snapshot?</AlertDialogTitle>
             <AlertDialogDescription>
               This will restore {vm.namespace}/{vm.name} from {restoreTarget?.name}. The VM must
               remain stopped while the restore runs.
@@ -227,7 +319,7 @@ export function SnapshotControls({ vm }: { vm: VirtualMachineDetail }) {
                 setRestoreTarget(null);
               }}
             >
-              Apply snapshot
+              Restore snapshot
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

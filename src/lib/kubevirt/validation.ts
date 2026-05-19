@@ -79,11 +79,11 @@ export function validateRestorePreconditions(
   }
 
   if (vm.powerState !== "offline") {
-    return { ok: false, reason: "Stop the VM before applying a snapshot." };
+    return { ok: false, reason: "Stop the VM before restoring a snapshot." };
   }
 
   if (snapshot.readyToUse !== true) {
-    return { ok: false, reason: "Only ready snapshots can be applied." };
+    return { ok: false, reason: "Only ready snapshots can be restored." };
   }
 
   return { ok: true };

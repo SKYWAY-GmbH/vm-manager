@@ -1,8 +1,8 @@
 "use client";
 
-import { Loader2, MoreHorizontal, Play, Power, RotateCw, Square } from "lucide-react";
+import { Loader2, Play, Power, RotateCw, Square } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Fragment, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -15,15 +15,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import type { VirtualMachineSummary, VmAction } from "@/lib/kubevirt/types";
 import { validateActionForVm } from "@/lib/kubevirt/validation";
+import { cn } from "@/lib/utils";
 
 const actions: Array<{
   action: VmAction;
@@ -41,7 +35,7 @@ const actions: Array<{
   },
   {
     action: "stop",
-    label: "Graceful stop",
+    label: "Stop",
     description: "Ask the guest to shut down cleanly.",
     icon: Square,
     requiresConfirmation: true,
@@ -55,7 +49,7 @@ const actions: Array<{
   },
   {
     action: "force-stop",
-    label: "Force stop",
+    label: "Force",
     description: "Cut power immediately. Unsaved guest data can be lost.",
     icon: Power,
     destructive: true,
@@ -67,9 +61,16 @@ function actionEndpoint(vm: VirtualMachineSummary) {
   return `/api/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}/actions`;
 }
 
-export function VmActionMenu({ vm }: { vm: VirtualMachineSummary }) {
-  const router = useRouter();
+export function VmActionButtons({
+  vm,
+  className,
+}: {
+  vm: VirtualMachineSummary;
+  className?: string;
+}) {
+  const { refresh } = useRouter();
   const [pendingAction, setPendingAction] = useState<(typeof actions)[number] | null>(null);
+  const [activeAction, setActiveAction] = useState<VmAction | null>(null);
   const [isPending, startTransition] = useTransition();
 
   async function runAction(nextAction: (typeof actions)[number]) {
@@ -80,6 +81,7 @@ export function VmActionMenu({ vm }: { vm: VirtualMachineSummary }) {
     }
 
     startTransition(async () => {
+      setActiveAction(nextAction.action);
       try {
         const response = await fetch(actionEndpoint(vm), {
           method: "POST",
@@ -98,52 +100,51 @@ export function VmActionMenu({ vm }: { vm: VirtualMachineSummary }) {
         }
 
         toast.success(`${nextAction.label} submitted for ${vm.name}.`);
-        router.refresh();
+        refresh();
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "VM action failed.");
+      } finally {
+        setActiveAction(null);
       }
     });
   }
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="icon" variant="outline" aria-label={`Actions for ${vm.name}`}>
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <MoreHorizontal className="size-4" aria-hidden="true" />
-            )}
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-48">
-          {actions.map((item, index) => {
-            const Icon = item.icon;
-            const validation = validateActionForVm(item.action, vm);
-            return (
-              <Fragment key={item.action}>
-                {index === 1 ? <DropdownMenuSeparator /> : null}
-                <DropdownMenuItem
-                  disabled={!validation.ok || isPending}
-                  variant={item.destructive ? "destructive" : "default"}
-                  onClick={() => {
-                    if (item.requiresConfirmation) {
-                      setPendingAction(item);
-                      return;
-                    }
+      <div className={cn("flex flex-wrap justify-end gap-1.5", className)}>
+        {actions.map((item) => {
+          const Icon = item.icon;
+          const validation = validateActionForVm(item.action, vm);
+          const disabled = !validation.ok || isPending;
+          const isActive = activeAction === item.action;
 
-                    void runAction(item);
-                  }}
-                >
-                  <Icon className="size-4" aria-hidden="true" />
-                  {item.label}
-                </DropdownMenuItem>
-              </Fragment>
-            );
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
+          return (
+            <Button
+              key={item.action}
+              size="sm"
+              variant={item.destructive ? "destructive" : "outline"}
+              disabled={disabled}
+              title={validation.reason}
+              className="h-8 px-2.5"
+              onClick={() => {
+                if (item.requiresConfirmation) {
+                  setPendingAction(item);
+                  return;
+                }
+
+                void runAction(item);
+              }}
+            >
+              {isActive ? (
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Icon className="size-3.5" aria-hidden="true" />
+              )}
+              {item.label}
+            </Button>
+          );
+        })}
+      </div>
 
       <AlertDialog
         open={pendingAction !== null}
@@ -180,3 +181,5 @@ export function VmActionMenu({ vm }: { vm: VirtualMachineSummary }) {
     </>
   );
 }
+
+export { VmActionButtons as VmActionMenu };

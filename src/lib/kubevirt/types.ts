@@ -117,6 +117,7 @@ export interface VmOperation {
   phase: string;
   createdAt?: string;
   message?: string;
+  snapshotName?: string;
 }
 
 export interface VirtualMachineSummary {

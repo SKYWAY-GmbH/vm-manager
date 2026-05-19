@@ -87,7 +87,13 @@ export function getErrorStatus(error: unknown): number | undefined {
 
   if (typeof error === "object" && error !== null) {
     const status =
-      "statusCode" in error ? error.statusCode : "status" in error ? error.status : undefined;
+      "statusCode" in error
+        ? error.statusCode
+        : "status" in error
+          ? error.status
+          : "code" in error
+            ? error.code
+            : undefined;
     if (typeof status === "number") {
       return status;
     }

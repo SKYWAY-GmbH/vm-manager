@@ -11,6 +11,8 @@ interface CustomObjectRequest {
   plural: string;
   namespace?: string;
   name?: string;
+  gracePeriodSeconds?: number;
+  propagationPolicy?: string;
   body?: unknown;
 }
 
@@ -19,6 +21,7 @@ export interface CustomObjectsClient {
   listNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
   getNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
   createNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
+  deleteNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
 }
 
 let kubeConfig: k8s.KubeConfig | null = null;

@@ -1,10 +1,7 @@
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { SnapshotControls } from "@/components/snapshot-controls";
-import { PowerStateBadge, ReadinessBadge } from "@/components/status-badge";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import {
   Table,
   TableBody,
@@ -13,9 +10,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { VmActionMenu } from "@/components/vm-action-menu";
-import { formatDateTime, formatIpList, formatReady } from "@/lib/format";
-import type { VirtualMachineDetail } from "@/lib/kubevirt/types";
+import { VmActionButtons } from "@/components/vm-action-menu";
+import { formatDateTime, formatElapsedSince, formatIpList, formatReady } from "@/lib/format";
+import type { VirtualMachineDetail, VmOperation } from "@/lib/kubevirt/types";
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -24,6 +21,22 @@ function Field({ label, value }: { label: string; value: string }) {
       <p className="truncate text-sm">{value}</p>
     </div>
   );
+}
+
+function operationTitle(operation: VmOperation) {
+  return operation.type === "restore" ? "Restore in progress" : "Snapshot in progress";
+}
+
+function operationSubject(operation: VmOperation) {
+  if (operation.type === "restore" && operation.snapshotName) {
+    return `Restoring from ${operation.snapshotName}`;
+  }
+
+  if (operation.type === "snapshot") {
+    return `Creating ${operation.name}`;
+  }
+
+  return operation.name;
 }
 
 export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
@@ -38,14 +51,10 @@ export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
         </Button>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate font-semibold text-2xl tracking-normal">{vm.name}</h1>
-              <PowerStateBadge state={vm.powerState} />
-              <ReadinessBadge ready={vm.ready} />
-            </div>
+            <h1 className="truncate font-semibold text-2xl tracking-normal">{vm.name}</h1>
             <p className="mt-1 text-muted-foreground text-sm">{vm.namespace}</p>
           </div>
-          <VmActionMenu vm={vm} />
+          <VmActionButtons vm={vm} />
         </div>
       </header>
 
@@ -54,30 +63,35 @@ export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
           <h2 className="font-medium text-sm">Current state</h2>
         </div>
         <div className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Field label="Printable status" value={vm.printableStatus} />
+          <Field label="Status" value={vm.printableStatus} />
           <Field label="Readiness" value={formatReady(vm.ready)} />
           <Field label="Node" value={vm.nodeName ?? "Unscheduled"} />
-          <Field label="Run strategy" value={vm.runStrategy} />
+          <Field label="Lifecycle mode" value={vm.runStrategy} />
           <Field label="IP addresses" value={formatIpList(vm.ipAddresses)} />
           <Field label="Created" value={formatDateTime(vm.createdAt)} />
           <Field label="UID" value={vm.uid ?? "Unavailable"} />
-          <Field label="Operations" value={vm.activeOperations.length.toString()} />
         </div>
         {vm.activeOperations.length > 0 ? (
-          <>
-            <Separator />
-            <div className="flex flex-wrap gap-2 p-4">
-              {vm.activeOperations.map((operation) => (
-                <Badge
-                  key={`${operation.type}-${operation.name}`}
-                  variant="outline"
-                  className="rounded-md"
-                >
-                  {operation.type}: {operation.name} ({operation.phase})
-                </Badge>
-              ))}
-            </div>
-          </>
+          <div className="border-border border-t">
+            {vm.activeOperations.map((operation) => (
+              <div
+                key={`${operation.type}-${operation.name}`}
+                className="grid gap-3 px-4 py-3 sm:grid-cols-[minmax(12rem,1fr)_10rem_8rem]"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-sm">{operationTitle(operation)}</p>
+                  <p className="truncate text-muted-foreground text-xs">
+                    {operationSubject(operation)}
+                  </p>
+                  {operation.message ? (
+                    <p className="mt-1 text-muted-foreground text-xs">{operation.message}</p>
+                  ) : null}
+                </div>
+                <Field label="Status" value={operation.phase} />
+                <Field label="Elapsed" value={formatElapsedSince(operation.createdAt)} />
+              </div>
+            ))}
+          </div>
         ) : null}
       </section>
 
@@ -87,13 +101,13 @@ export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
         <div className="border-border border-b px-4 py-3">
           <h2 className="font-medium text-sm">Restore history</h2>
         </div>
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Snapshot</TableHead>
-                <TableHead>Phase</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead>Created</TableHead>
               </TableRow>
             </TableHeader>
@@ -112,6 +126,22 @@ export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
               ))}
             </TableBody>
           </Table>
+        </div>
+        <div className="divide-y divide-border md:hidden">
+          {vm.restores.map((restore) => (
+            <div key={restore.name} className="space-y-3 p-4">
+              <div className="min-w-0">
+                <p className="break-words font-medium text-sm">{restore.name}</p>
+                <p className="mt-1 text-muted-foreground text-xs">
+                  Snapshot: {restore.snapshotName ?? "Unknown"}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <Field label="Status" value={restore.message ?? restore.phase} />
+                <Field label="Created" value={formatDateTime(restore.createdAt)} />
+              </div>
+            </div>
+          ))}
         </div>
         {vm.restores.length === 0 ? (
           <div className="px-4 py-10 text-center text-muted-foreground text-sm">

@@ -10,6 +10,7 @@ import type {
   VmOperation,
   VmPowerState,
 } from "./types";
+import { isTerminalVmi } from "./vmi";
 
 function compact<T>(values: Array<T | null | undefined>): T[] {
   return values.filter((value): value is T => value !== null && value !== undefined);
@@ -30,6 +31,10 @@ export function normalizePowerState(
   }
 
   if (["stopped", "off", "halted"].some((status) => printable.includes(status))) {
+    return "offline";
+  }
+
+  if (isTerminalVmi(vmi)) {
     return "offline";
   }
 
@@ -216,6 +221,7 @@ export function getActiveOperations(
         phase: summary.phase,
         createdAt: summary.createdAt,
         message: summary.message,
+        snapshotName: summary.snapshotName,
       };
     });
 

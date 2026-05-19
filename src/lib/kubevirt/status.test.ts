@@ -33,6 +33,19 @@ describe("KubeVirt status normalization", () => {
     expect(normalizePowerState(vm)).toBe("offline");
   });
 
+  it("treats terminal VMIs as offline", () => {
+    const vm: KubeVirtVirtualMachine = {
+      metadata: { name: "vm-01", namespace: "windows" },
+      status: { created: true },
+    };
+    const vmi: KubeVirtVirtualMachineInstance = {
+      metadata: { name: "vm-01", namespace: "windows" },
+      status: { phase: "Succeeded" },
+    };
+
+    expect(normalizePowerState(vm, vmi)).toBe("offline");
+  });
+
   it("extracts unique sorted interface IPs", () => {
     const vmi: KubeVirtVirtualMachineInstance = {
       status: {

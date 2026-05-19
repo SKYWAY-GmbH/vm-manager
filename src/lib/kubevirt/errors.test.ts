@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeKubernetesErrorMessage } from "./errors";
+import { getErrorStatus, normalizeKubernetesErrorMessage, toApiError } from "./errors";
 
 describe("normalizeKubernetesErrorMessage", () => {
   it("extracts Kubernetes Status messages from client errors", () => {
@@ -15,5 +15,19 @@ describe("normalizeKubernetesErrorMessage", () => {
     expect(normalizeKubernetesErrorMessage("Virtual machine windows/vm-01 was not found.")).toBe(
       "Virtual machine windows/vm-01 was not found.",
     );
+  });
+});
+
+describe("Kubernetes API error status parsing", () => {
+  it("recognizes Kubernetes client code properties", () => {
+    expect(getErrorStatus({ code: 404, message: "not found" })).toBe(404);
+  });
+
+  it("keeps Kubernetes client error status when converting to ApiError", () => {
+    const error = toApiError(
+      Object.assign(new Error("virtualmachineinstances.kubevirt.io not found"), { code: 404 }),
+    );
+
+    expect(error.status).toBe(404);
   });
 });
