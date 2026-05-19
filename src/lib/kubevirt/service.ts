@@ -411,21 +411,32 @@ export async function getVirtualMachine(
   namespace: string,
   name: string,
 ): Promise<VirtualMachineDetail> {
-  const [summary, snapshots, restores, snapshotContents, volumeSnapshotContents, longhornVolumes] =
-    await Promise.all([
-      getVirtualMachineSummary(namespace, name),
-      listSnapshots(namespace),
-      listRestores(namespace),
+  const [vm, vmi, snapshots, restores] = await Promise.all([
+    readVirtualMachine(namespace, name),
+    readOptionalNamespaced<KubeVirtVirtualMachineInstance>(
+      namespace,
+      name,
+      "virtualmachineinstances",
+    ),
+    listSnapshots(namespace),
+    listRestores(namespace),
+  ]);
+  const summary = toVmSummary(vm, vmi, snapshots, restores);
+  let snapshotRestoreBlockers = new Map<string, string>();
+
+  if (!hasActiveRestore(summary)) {
+    const [snapshotContents, volumeSnapshotContents, longhornVolumes] = await Promise.all([
       listSnapshotContents(namespace),
       listVolumeSnapshotContents(),
       listLonghornVolumes(),
     ]);
-  const snapshotRestoreBlockers = snapshotStorageRestoreBlockers(
-    namespace,
-    snapshotContents,
-    volumeSnapshotContents,
-    longhornVolumes,
-  );
+    snapshotRestoreBlockers = snapshotStorageRestoreBlockers(
+      namespace,
+      snapshotContents,
+      volumeSnapshotContents,
+      longhornVolumes,
+    );
+  }
 
   return {
     ...summary,
