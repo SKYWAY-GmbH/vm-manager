@@ -71,6 +71,10 @@ function parseResponseBody(text: string): unknown {
 }
 
 function getErrorMessage(body: unknown, fallback: string): string {
+  if (typeof body === "string" && body.trim()) {
+    return body.trim();
+  }
+
   if (typeof body === "object" && body !== null) {
     if ("message" in body && typeof body.message === "string") {
       return body.message;
@@ -98,7 +102,7 @@ export async function requestKubeJson(
   const url = joinServerPath(cluster.server, path);
   const payload = body === undefined ? undefined : JSON.stringify(body);
   const headers: Record<string, string | number> = {
-    Accept: "application/json",
+    Accept: "*/*",
   };
 
   if (payload) {
