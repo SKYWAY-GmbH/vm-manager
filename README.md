@@ -11,6 +11,7 @@ The app has no built-in authentication and contains no secrets. Production acces
 - Supports start, graceful stop, reboot, and force stop through the KubeVirt subresource API.
 - Supports custom-named `VirtualMachineSnapshot` creation.
 - Shows restore history and allows snapshot restore only when the VM is stopped and the snapshot is ready.
+- Hides VMs labelled or annotated with `vm-manager.skyway.tools/managed=false`.
 
 ## Kubernetes Access
 

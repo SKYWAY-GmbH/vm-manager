@@ -2,6 +2,7 @@ import "server-only";
 
 import { getCustomObjectsClient, requestKubeJson } from "./client";
 import { ApiError, getErrorStatus } from "./errors";
+import { isManagedVirtualMachine } from "./management";
 import { objectKey, toRestoreSummary, toSnapshotSummary, toVmSummary } from "./status";
 import type {
   KubeObjectList,
@@ -84,14 +85,23 @@ async function readVirtualMachine(
   name: string,
 ): Promise<KubeVirtVirtualMachine> {
   try {
-    return (await getCustomObjectsClient().getNamespacedCustomObject({
+    const vm = (await getCustomObjectsClient().getNamespacedCustomObject({
       group: KUBEVIRT_GROUP,
       version: KUBEVIRT_VERSION,
       namespace,
       plural: "virtualmachines",
       name,
     })) as KubeVirtVirtualMachine;
+    if (!isManagedVirtualMachine(vm)) {
+      throw new ApiError(404, `Virtual machine ${namespace}/${name} is not managed by this app.`);
+    }
+
+    return vm;
   } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
     if (isNotFound(error)) {
       throw new ApiError(404, `Virtual machine ${namespace}/${name} was not found.`);
     }
@@ -200,6 +210,7 @@ export async function listVirtualMachines(): Promise<VirtualMachineSummary[]> {
   const vmiMap = toVmiMap(vmis);
 
   return items<KubeVirtVirtualMachine>(vmResponse)
+    .filter(isManagedVirtualMachine)
     .map((vm) => {
       const namespace = vm.metadata?.namespace ?? "default";
       const name = vm.metadata?.name ?? "unknown";
