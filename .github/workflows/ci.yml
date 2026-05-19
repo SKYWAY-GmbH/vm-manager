@@ -49,4 +49,5 @@ jobs:
           "$RUNNER_TEMP/bin/gitleaks" version
 
       - name: Gitleaks
-        run: "$RUNNER_TEMP/bin/gitleaks" detect --redact
+        run: |
+          "$RUNNER_TEMP/bin/gitleaks" detect --redact
