@@ -1,5 +1,6 @@
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
+import { AutoRefresh } from "@/components/auto-refresh";
 import { SnapshotControls } from "@/components/snapshot-controls";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,6 +51,7 @@ function restoreSnapshotLabel(restore: VirtualMachineRestoreSummary) {
 export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
+      <AutoRefresh />
       <header className="space-y-4 border-border border-b pb-5">
         <Button asChild variant="ghost" size="sm" className="w-fit">
           <Link href="/">

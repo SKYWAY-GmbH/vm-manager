@@ -3,6 +3,7 @@
 import { ArrowRight, Search } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { AutoRefresh } from "@/components/auto-refresh";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -78,6 +79,7 @@ export function VmOverview({
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
+      <AutoRefresh />
       <header className="flex flex-col gap-4 border-border border-b pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div className="space-y-1">
           <h1 className="font-semibold text-2xl tracking-normal">Virtual machines</h1>
@@ -196,9 +198,7 @@ export function VmOverview({
         ) : null}
       </section>
 
-      <p className="text-muted-foreground text-xs">
-        Actions refresh the inventory after submission.
-      </p>
+      <p className="text-muted-foreground text-xs">Inventory refreshes every 5 seconds.</p>
     </div>
   );
 }
