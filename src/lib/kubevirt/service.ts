@@ -255,14 +255,11 @@ function snapshotStorageRestoreBlockers(
   return blockers;
 }
 
-function applySnapshotRestoreBlockers(
+function filterRestorableSnapshotSummaries(
   snapshots: VirtualMachineSnapshotSummary[],
   blockers: Map<string, string>,
 ): VirtualMachineSnapshotSummary[] {
-  return snapshots.map((snapshot) => ({
-    ...snapshot,
-    restoreBlockedReason: blockers.get(snapshot.name),
-  }));
+  return snapshots.filter((snapshot) => !blockers.has(snapshot.name));
 }
 
 function filterSnapshotSummariesForVm(
@@ -440,7 +437,7 @@ export async function getVirtualMachine(
 
   return {
     ...summary,
-    snapshots: applySnapshotRestoreBlockers(
+    snapshots: filterRestorableSnapshotSummaries(
       filterSnapshotSummariesForVm(snapshots, name),
       snapshotRestoreBlockers,
     ),

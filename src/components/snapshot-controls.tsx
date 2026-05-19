@@ -65,10 +65,6 @@ function restoreDisabledMessage(vm: VirtualMachineDetail, validation: Validation
 }
 
 function snapshotStatus(snapshot: VirtualMachineSnapshotSummary) {
-  if (snapshot.restoreBlockedReason) {
-    return `Not restorable: ${snapshot.restoreBlockedReason}`;
-  }
-
   if (snapshot.message) {
     return snapshot.message;
   }

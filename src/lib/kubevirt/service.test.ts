@@ -123,7 +123,7 @@ describe("createVirtualMachineRestore", () => {
     expect(client.createNamespacedCustomObject).toHaveBeenCalled();
   });
 
-  it("marks snapshots with missing Longhorn source volumes as not restorable", async () => {
+  it("hides snapshots with missing Longhorn source volumes", async () => {
     setupRestore(["not-found"]);
     client.listNamespacedCustomObject.mockImplementation(({ plural }: { plural: string }) => {
       if (plural === "virtualmachinesnapshots") {
@@ -171,11 +171,11 @@ describe("createVirtualMachineRestore", () => {
     });
 
     const detail = await getVirtualMachine("windows", "vm-01");
-    expect(detail.snapshots[0]?.restoreBlockedReason).toContain("Longhorn volume");
+    expect(detail.snapshots).toEqual([]);
 
     await expect(
       createVirtualMachineRestore("windows", "vm-01", "snap-a", "restore-a"),
-    ).rejects.toThrow("cannot be restored");
+    ).rejects.toThrow("Snapshot not found");
     expect(client.createNamespacedCustomObject).not.toHaveBeenCalled();
   });
 });
