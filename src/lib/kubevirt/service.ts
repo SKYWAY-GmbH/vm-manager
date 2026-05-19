@@ -1,6 +1,12 @@
 import "server-only";
 
-import { getCoreV1Client, getCustomObjectsClient, requestKubeJson } from "./client";
+import {
+  getCoreV1Client,
+  getCustomObjectsClient,
+  patchNamespacedCustomObjectMergePatch,
+  patchPersistentVolumeMergePatch,
+  requestKubeJson,
+} from "./client";
 import { ApiError } from "./errors";
 import {
   backupsForVm,
@@ -827,7 +833,7 @@ export async function restoreVirtualMachineBackup(
       }
 
       const rollback = rollbackMetadata(namespace, vmName, root.summary);
-      await getCoreV1Client().patchPersistentVolume({
+      await patchPersistentVolumeMergePatch({
         name: root.summary.pvName,
         body: {
           metadata: {
@@ -839,7 +845,7 @@ export async function restoreVirtualMachineBackup(
           },
         },
       });
-      await getCustomObjectsClient().patchNamespacedCustomObject({
+      await patchNamespacedCustomObjectMergePatch({
         group: LONGHORN_GROUP,
         version: LONGHORN_VERSION,
         namespace: LONGHORN_NAMESPACE,

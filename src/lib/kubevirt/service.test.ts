@@ -23,10 +23,14 @@ const coreClient = vi.hoisted(() => ({
 }));
 
 const rawKubeRequest = vi.hoisted(() => vi.fn());
+const patchNamespacedCustomObjectMergePatch = vi.hoisted(() => vi.fn());
+const patchPersistentVolumeMergePatch = vi.hoisted(() => vi.fn());
 
 vi.mock("./client", () => ({
   getCoreV1Client: () => coreClient,
   getCustomObjectsClient: () => customClient,
+  patchNamespacedCustomObjectMergePatch,
+  patchPersistentVolumeMergePatch,
   requestKubeJson: rawKubeRequest,
 }));
 
@@ -190,6 +194,8 @@ function setupBase({
   coreClient.createNamespacedPersistentVolumeClaim.mockResolvedValue({});
   coreClient.patchPersistentVolume.mockResolvedValue({});
   coreClient.deleteNamespacedPersistentVolumeClaim.mockResolvedValue({});
+  patchNamespacedCustomObjectMergePatch.mockResolvedValue({});
+  patchPersistentVolumeMergePatch.mockResolvedValue({});
   customClient.createNamespacedCustomObject.mockImplementation(
     ({ plural, body }: { plural: string; body: { metadata?: { name?: string } } }) => {
       if (plural === "volumes") {
@@ -302,7 +308,7 @@ describe("Longhorn rootdisk operations", () => {
     expect(volumeCreate.body.spec.size).toBe("21474836480");
     expect(volumeCreate.body.spec.fromBackup).toBe(backup.status?.url);
 
-    expect(coreClient.patchPersistentVolume).toHaveBeenCalledWith(
+    expect(patchPersistentVolumeMergePatch).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "pv-root",
         body: expect.objectContaining({
@@ -317,7 +323,7 @@ describe("Longhorn rootdisk operations", () => {
       name: "rootdisk-pvc",
     });
 
-    expect(coreClient.patchPersistentVolume.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(patchPersistentVolumeMergePatch.mock.invocationCallOrder[0]).toBeLessThan(
       coreClient.deleteNamespacedPersistentVolumeClaim.mock.invocationCallOrder[0],
     );
     expect(coreClient.createPersistentVolume.mock.invocationCallOrder[0]).toBeLessThan(

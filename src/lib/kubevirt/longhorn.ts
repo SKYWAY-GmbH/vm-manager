@@ -1,6 +1,10 @@
 import "server-only";
 
-import { getCoreV1Client, getCustomObjectsClient } from "./client";
+import {
+  getCoreV1Client,
+  getCustomObjectsClient,
+  patchNamespacedCustomObjectMergePatch,
+} from "./client";
 import { ApiError, getErrorStatus } from "./errors";
 import {
   VM_MANAGER_MANAGED_KEY,
@@ -431,7 +435,7 @@ export async function patchVmOperation(
           [VM_MANAGER_OPERATION_MESSAGE_KEY]: operation.message ?? null,
         };
 
-  await getCustomObjectsClient().patchNamespacedCustomObject({
+  await patchNamespacedCustomObjectMergePatch({
     group: "kubevirt.io",
     version: "v1",
     namespace,

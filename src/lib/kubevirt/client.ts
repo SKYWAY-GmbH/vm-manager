@@ -16,6 +16,11 @@ interface CustomObjectRequest {
   body?: unknown;
 }
 
+interface NamespacedCustomObjectPatchRequest
+  extends Required<
+    Pick<CustomObjectRequest, "group" | "version" | "namespace" | "plural" | "name" | "body">
+  > {}
+
 export interface CustomObjectsClient {
   listCustomObjectForAllNamespaces(request: CustomObjectRequest): Promise<unknown>;
   listNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
@@ -33,6 +38,8 @@ interface CoreV1Request {
   propagationPolicy?: string;
   body?: unknown;
 }
+
+interface PersistentVolumePatchRequest extends Required<Pick<CoreV1Request, "name" | "body">> {}
 
 export interface CoreV1Client {
   createNamespacedPersistentVolumeClaim(request: CoreV1Request): Promise<unknown>;
@@ -119,9 +126,10 @@ function getErrorMessage(body: unknown, fallback: string): string {
 }
 
 export async function requestKubeJson(
-  method: "POST" | "PUT",
+  method: "POST" | "PUT" | "PATCH",
   path: string,
   body?: unknown,
+  requestOptions: { contentType?: string } = {},
 ): Promise<unknown> {
   const config = getKubeConfig();
   const cluster = config.getCurrentCluster();
@@ -136,7 +144,7 @@ export async function requestKubeJson(
   };
 
   if (payload) {
-    headers["Content-Type"] = "application/json";
+    headers["Content-Type"] = requestOptions.contentType ?? "application/json";
     headers["Content-Length"] = Buffer.byteLength(payload);
   }
 
@@ -191,5 +199,34 @@ export async function requestKubeJson(
     }
 
     request.end();
+  });
+}
+
+export function pathSegment(value: string): string {
+  return encodeURIComponent(value);
+}
+
+export async function patchNamespacedCustomObjectMergePatch({
+  group,
+  version,
+  namespace,
+  plural,
+  name,
+  body,
+}: NamespacedCustomObjectPatchRequest): Promise<unknown> {
+  return requestKubeJson(
+    "PATCH",
+    `/apis/${pathSegment(group)}/${pathSegment(version)}/namespaces/${pathSegment(namespace)}/${pathSegment(plural)}/${pathSegment(name)}`,
+    body,
+    { contentType: "application/merge-patch+json" },
+  );
+}
+
+export async function patchPersistentVolumeMergePatch({
+  name,
+  body,
+}: PersistentVolumePatchRequest): Promise<unknown> {
+  return requestKubeJson("PATCH", `/api/v1/persistentvolumes/${pathSegment(name)}`, body, {
+    contentType: "application/merge-patch+json",
   });
 }
