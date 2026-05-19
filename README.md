@@ -1,36 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SKYWAY VM Manager
 
-## Getting Started
+Dark-only KubeVirt control GUI for SKYWAY virtual machines.
 
-First, run the development server:
+The app has no built-in authentication and contains no secrets. Production access is expected to be enforced in front of the service by company Pangolin SSO.
+
+## Features
+
+- Lists KubeVirt `VirtualMachine` resources across all namespaces.
+- Shows power state, `printableStatus`, readiness, node, IP addresses, run strategy, and active snapshot/restore operations.
+- Supports start, graceful stop, reboot, and force stop through the KubeVirt subresource API.
+- Supports custom-named `VirtualMachineSnapshot` creation.
+- Shows restore history and allows snapshot restore only when the VM is stopped and the snapshot is ready.
+
+## Kubernetes Access
+
+The server uses Kubernetes API credentials in this order:
+
+1. In-cluster ServiceAccount credentials when `KUBERNETES_SERVICE_HOST` is present.
+2. Local kubeconfig via `KUBECONFIG` or the default kubeconfig search path for development.
+
+The app never shells out to `kubectl` or `virtctl`.
+
+## Development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
+portless vm-manager pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://vm-manager.localhost:1355` when Portless falls back to its non-privileged proxy port.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Checks
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+gitleaks detect
+```
 
-## Learn More
+## Image
 
-To learn more about Next.js, take a look at the following resources:
+Release workflow publishes:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+ghcr.io/skyway-gmbh/vm-manager
+```

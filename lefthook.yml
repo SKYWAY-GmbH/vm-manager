@@ -1,0 +1,15 @@
+pre-commit:
+  commands:
+    gitleaks:
+      run: gitleaks protect --staged --redact
+    biome:
+      run: pnpm biome check .
+
+pre-push:
+  commands:
+    typecheck:
+      run: pnpm typecheck
+    test:
+      run: pnpm test
+    build:
+      run: pnpm build
