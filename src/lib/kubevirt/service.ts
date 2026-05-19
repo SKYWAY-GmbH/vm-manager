@@ -46,6 +46,14 @@ import {
   revertSnapshot,
 } from "./longhorn-api";
 import { isManagedVirtualMachine } from "./management";
+import {
+  clearManualRuntimeAnnotations,
+  isAllowedManualRuntimeDays,
+  type ManualRuntimeAnnotationPatch,
+  manualRuntimeAnnotationsForVmi,
+  manualRuntimePatchBody,
+} from "./manual-runtime";
+import { ensureManualRuntimeReconcilerStarted } from "./manual-runtime-reconciler";
 import { objectKey, toVmSummary } from "./status";
 import { compareTimestampsDesc, firstTimestamp } from "./timestamps";
 import type {
@@ -54,6 +62,7 @@ import type {
   KubePersistentVolumeClaim,
   KubeVirtVirtualMachine,
   KubeVirtVirtualMachineInstance,
+  ManualRuntimeDurationDays,
   VirtualMachineBackupSummary,
   VirtualMachineDetail,
   VirtualMachineRollbackSummary,
@@ -80,6 +89,12 @@ const LONGHORN_WAIT_TIMEOUT_MS = 10 * 60_000;
 const LONGHORN_WAIT_INTERVAL_MS = 2_000;
 const PVC_WAIT_TIMEOUT_MS = 90_000;
 const PVC_WAIT_INTERVAL_MS = 1_000;
+const START_TIMER_VMI_WAIT_TIMEOUT_MS = 30_000;
+const START_TIMER_VMI_WAIT_INTERVAL_MS = 1_000;
+
+interface VmActionOptions {
+  timeoutDays?: ManualRuntimeDurationDays;
+}
 
 async function optionalList<T>(request: {
   group: string;
@@ -229,6 +244,47 @@ async function waitForRestoreTargetVmiToDisappear(namespace: string, name: strin
     409,
     `The VM is stopped, but Kubernetes still reports an existing instance${lastPhase ? ` in ${lastPhase} phase` : ""}. Try restoring again in a moment.`,
   );
+}
+
+async function waitForManualRuntimeVmi(
+  namespace: string,
+  name: string,
+): Promise<KubeVirtVirtualMachineInstance> {
+  const deadline = Date.now() + START_TIMER_VMI_WAIT_TIMEOUT_MS;
+
+  while (Date.now() <= deadline) {
+    const vmi = await readOptionalNamespaced<KubeVirtVirtualMachineInstance>(
+      namespace,
+      name,
+      "virtualmachineinstances",
+    );
+
+    if (vmi?.metadata?.uid && !isTerminalVmi(vmi)) {
+      return vmi;
+    }
+
+    await sleep(START_TIMER_VMI_WAIT_INTERVAL_MS);
+  }
+
+  throw new ApiError(
+    504,
+    `Timed out waiting for ${namespace}/${name} to report a running instance for runtime timer setup.`,
+  );
+}
+
+async function patchVirtualMachineManualRuntime(
+  namespace: string,
+  name: string,
+  annotations: ManualRuntimeAnnotationPatch,
+) {
+  await patchNamespacedCustomObjectMergePatch({
+    group: KUBEVIRT_GROUP,
+    version: KUBEVIRT_VERSION,
+    namespace,
+    plural: "virtualmachines",
+    name,
+    body: manualRuntimePatchBody(annotations),
+  });
 }
 
 async function waitForPvcDeleted(namespace: string, name: string) {
@@ -463,6 +519,7 @@ async function getVirtualMachineSummary(
 
 export async function listVirtualMachines(): Promise<VirtualMachineSummary[]> {
   ensureRollbackReaperStarted();
+  ensureManualRuntimeReconcilerStarted();
 
   const [vmResponse, vmis] = await Promise.all([
     getCustomObjectsClient().listCustomObjectForAllNamespaces({
@@ -492,6 +549,7 @@ export async function getVirtualMachine(
   name: string,
 ): Promise<VirtualMachineDetail> {
   ensureRollbackReaperStarted();
+  ensureManualRuntimeReconcilerStarted();
 
   const [vm, vmi] = await Promise.all([
     readVirtualMachine(namespace, name),
@@ -540,11 +598,28 @@ export async function performVirtualMachineAction(
   namespace: string,
   name: string,
   action: VmAction,
+  options: VmActionOptions = {},
 ): Promise<VirtualMachineDetail> {
   const vm = await getVirtualMachineSummary(namespace, name);
   const validation = validateActionForVm(action, vm);
   if (!validation.ok) {
     throw new ApiError(409, validation.reason ?? "VM action is not allowed.");
+  }
+
+  if (options.timeoutDays !== undefined && action !== "start") {
+    throw new ApiError(400, "Runtime timeout can only be set when starting a VM.");
+  }
+
+  if (action === "start" && vm.runStrategy === "Manual" && options.timeoutDays === undefined) {
+    throw new ApiError(400, "Manual VM starts require a runtime timeout.");
+  }
+
+  if (action === "start" && vm.runStrategy !== "Manual" && options.timeoutDays !== undefined) {
+    throw new ApiError(409, "Runtime timeout only applies to Manual VMs.");
+  }
+
+  if (options.timeoutDays !== undefined && !isAllowedManualRuntimeDays(options.timeoutDays)) {
+    throw new ApiError(400, "Runtime timeout must be 1-7 days or 30 days.");
   }
 
   const encodedNamespace = encodeSegment(namespace);
@@ -556,6 +631,15 @@ export async function performVirtualMachineAction(
       apiVersion: `${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}`,
       kind: "StartOptions",
     });
+
+    if (vm.runStrategy === "Manual") {
+      const vmi = await waitForManualRuntimeVmi(namespace, name);
+      await patchVirtualMachineManualRuntime(
+        namespace,
+        name,
+        manualRuntimeAnnotationsForVmi(vmi, options.timeoutDays ?? 7),
+      );
+    }
   }
 
   if (action === "stop" || action === "force-stop") {
@@ -564,6 +648,10 @@ export async function performVirtualMachineAction(
       kind: "StopOptions",
       ...(action === "force-stop" ? { gracePeriod: 0 } : {}),
     });
+
+    if (vm.runStrategy === "Manual") {
+      await patchVirtualMachineManualRuntime(namespace, name, clearManualRuntimeAnnotations());
+    }
   }
 
   if (action === "reboot") {
@@ -572,6 +660,42 @@ export async function performVirtualMachineAction(
       kind: "RestartOptions",
     });
   }
+
+  return getVirtualMachine(namespace, name);
+}
+
+export async function resetVirtualMachineManualRuntimeTimeout(
+  namespace: string,
+  name: string,
+  timeoutDays: ManualRuntimeDurationDays,
+): Promise<VirtualMachineDetail> {
+  if (!isAllowedManualRuntimeDays(timeoutDays)) {
+    throw new ApiError(400, "Runtime timeout must be 1-7 days or 30 days.");
+  }
+
+  const [vm, vmi] = await Promise.all([
+    readVirtualMachine(namespace, name),
+    readOptionalNamespaced<KubeVirtVirtualMachineInstance>(
+      namespace,
+      name,
+      "virtualmachineinstances",
+    ),
+  ]);
+  const summary = toVmSummary(vm, vmi);
+
+  if (summary.runStrategy !== "Manual") {
+    throw new ApiError(409, "Runtime timeout only applies to Manual VMs.");
+  }
+
+  if (summary.powerState !== "online" || !vmi?.metadata?.uid || isTerminalVmi(vmi)) {
+    throw new ApiError(409, "Only running Manual VMs can reset their runtime timeout.");
+  }
+
+  await patchVirtualMachineManualRuntime(
+    namespace,
+    name,
+    manualRuntimeAnnotationsForVmi(vmi, timeoutDays, new Date().toISOString()),
+  );
 
   return getVirtualMachine(namespace, name);
 }

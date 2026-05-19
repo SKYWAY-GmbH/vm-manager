@@ -12,6 +12,7 @@ const service = vi.hoisted(() => ({
   listVirtualMachineSnapshots: vi.fn(),
   listVirtualMachines: vi.fn(),
   performVirtualMachineAction: vi.fn(),
+  resetVirtualMachineManualRuntimeTimeout: vi.fn(),
   restoreVirtualMachineBackup: vi.fn(),
   restoreVirtualMachineSnapshot: vi.fn(),
 }));
@@ -24,6 +25,7 @@ import { DELETE as deleteOperation } from "./[namespace]/[name]/operations/route
 import { POST as postRestore } from "./[namespace]/[name]/restores/route";
 import { DELETE as deleteRollback } from "./[namespace]/[name]/rollbacks/[pvName]/route";
 import { POST as postSnapshot } from "./[namespace]/[name]/snapshots/route";
+import { PUT as putTimeout } from "./[namespace]/[name]/timeout/route";
 import { GET as getVms } from "./route";
 
 function context(namespace = "windows", name = "vm-01") {
@@ -74,6 +76,68 @@ describe("VM route handlers", () => {
 
     expect(response.status).toBe(200);
     expect(service.performVirtualMachineAction).toHaveBeenCalledWith("windows", "vm-01", "reboot");
+  });
+
+  it("submits Manual start runtime timeout", async () => {
+    service.performVirtualMachineAction.mockResolvedValue({ id: "windows/vm-01" });
+
+    const response = await postAction(
+      new Request("http://local", {
+        method: "POST",
+        body: JSON.stringify({ action: "start", timeoutDays: 30 }),
+      }),
+      context(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.performVirtualMachineAction).toHaveBeenCalledWith("windows", "vm-01", "start", {
+      timeoutDays: 30,
+    });
+  });
+
+  it("validates action timeout durations", async () => {
+    const response = await postAction(
+      new Request("http://local", {
+        method: "POST",
+        body: JSON.stringify({ action: "start", timeoutDays: 8 }),
+      }),
+      context(),
+    );
+
+    expect(response.status).toBe(400);
+    expect(service.performVirtualMachineAction).not.toHaveBeenCalled();
+  });
+
+  it("resets Manual runtime timeout", async () => {
+    service.resetVirtualMachineManualRuntimeTimeout.mockResolvedValue({ id: "windows/vm-01" });
+
+    const response = await putTimeout(
+      new Request("http://local", {
+        method: "PUT",
+        body: JSON.stringify({ timeoutDays: 7 }),
+      }),
+      context(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.resetVirtualMachineManualRuntimeTimeout).toHaveBeenCalledWith(
+      "windows",
+      "vm-01",
+      7,
+    );
+  });
+
+  it("validates reset timeout durations", async () => {
+    const response = await putTimeout(
+      new Request("http://local", {
+        method: "PUT",
+        body: JSON.stringify({ timeoutDays: 14 }),
+      }),
+      context(),
+    );
+
+    expect(response.status).toBe(400);
+    expect(service.resetVirtualMachineManualRuntimeTimeout).not.toHaveBeenCalled();
   });
 
   it("creates custom-named snapshots", async () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Play, Power, RotateCw, Square } from "lucide-react";
+import { Clock, Loader2, Play, Power, RotateCw, Square } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
@@ -15,7 +15,21 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import type { VirtualMachineSummary, VmAction } from "@/lib/kubevirt/types";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { formatTimeUntil } from "@/lib/format";
+import type {
+  ManualRuntimeDurationDays,
+  VirtualMachineSummary,
+  VmAction,
+} from "@/lib/kubevirt/types";
 import { validateActionForVm } from "@/lib/kubevirt/validation";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +75,14 @@ function actionEndpoint(vm: VirtualMachineSummary) {
   return `/api/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}/actions`;
 }
 
+function timeoutEndpoint(vm: VirtualMachineSummary) {
+  return `/api/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}/timeout`;
+}
+
+function durationLabel(durationDays: ManualRuntimeDurationDays) {
+  return durationDays === 1 ? "1 day" : `${durationDays} days`;
+}
+
 export function VmActionButtons({
   vm,
   className,
@@ -70,10 +92,25 @@ export function VmActionButtons({
 }) {
   const { refresh } = useRouter();
   const [pendingAction, setPendingAction] = useState<(typeof actions)[number] | null>(null);
+  const [runtimeDialogMode, setRuntimeDialogMode] = useState<"start" | "reset" | null>(null);
+  const [runtimeDays, setRuntimeDays] = useState<ManualRuntimeDurationDays>(
+    vm.manualRuntime?.durationDays ?? 7,
+  );
   const [activeAction, setActiveAction] = useState<VmAction | null>(null);
+  const [isResettingRuntime, setIsResettingRuntime] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const startAction = actions.find((item) => item.action === "start");
+  const showRuntimeReset = vm.runStrategy === "Manual" && vm.powerState === "online";
 
-  async function runAction(nextAction: (typeof actions)[number]) {
+  function openRuntimeDialog(mode: "start" | "reset") {
+    setRuntimeDays(vm.manualRuntime?.durationDays ?? 7);
+    setRuntimeDialogMode(mode);
+  }
+
+  async function runAction(
+    nextAction: (typeof actions)[number],
+    options: { timeoutDays?: ManualRuntimeDurationDays } = {},
+  ) {
     const validation = validateActionForVm(nextAction.action, vm);
     if (!validation.ok) {
       toast.error(validation.reason);
@@ -88,7 +125,10 @@ export function VmActionButtons({
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ action: nextAction.action }),
+          body: JSON.stringify({
+            action: nextAction.action,
+            ...(options.timeoutDays === undefined ? {} : { timeoutDays: options.timeoutDays }),
+          }),
         });
 
         if (!response.ok) {
@@ -109,13 +149,71 @@ export function VmActionButtons({
     });
   }
 
+  async function resetRuntimeTimeout(timeoutDays: ManualRuntimeDurationDays) {
+    startTransition(async () => {
+      setIsResettingRuntime(true);
+      try {
+        const response = await fetch(timeoutEndpoint(vm), {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ timeoutDays }),
+        });
+
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as {
+            error?: { message?: string };
+          } | null;
+          toast.error(payload?.error?.message ?? "Runtime timeout reset failed.");
+          return;
+        }
+
+        toast.success(`Runtime timeout reset for ${vm.name}.`);
+        refresh();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Runtime timeout reset failed.");
+      } finally {
+        setIsResettingRuntime(false);
+      }
+    });
+  }
+
+  function submitRuntimeDialog() {
+    if (runtimeDialogMode === "start" && startAction) {
+      void runAction(startAction, { timeoutDays: runtimeDays });
+    }
+
+    if (runtimeDialogMode === "reset") {
+      void resetRuntimeTimeout(runtimeDays);
+    }
+
+    setRuntimeDialogMode(null);
+  }
+
   return (
     <>
       <div className={cn("flex flex-wrap justify-end gap-1.5", className)}>
+        {showRuntimeReset ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={isPending || isResettingRuntime}
+            className="h-8 px-2.5"
+            onClick={() => openRuntimeDialog("reset")}
+          >
+            {isResettingRuntime ? (
+              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <Clock className="size-3.5" aria-hidden="true" />
+            )}
+            {formatTimeUntil(vm.manualRuntime?.expiresAt)}
+          </Button>
+        ) : null}
         {actions.map((item) => {
           const Icon = item.icon;
           const validation = validateActionForVm(item.action, vm);
-          const disabled = !validation.ok || isPending;
+          const disabled = !validation.ok || isPending || isResettingRuntime;
           const isActive = activeAction === item.action;
 
           return (
@@ -127,6 +225,11 @@ export function VmActionButtons({
               title={validation.reason}
               className="h-8 px-2.5"
               onClick={() => {
+                if (item.action === "start" && vm.runStrategy === "Manual") {
+                  openRuntimeDialog("start");
+                  return;
+                }
+
                 if (item.requiresConfirmation) {
                   setPendingAction(item);
                   return;
@@ -145,6 +248,88 @@ export function VmActionButtons({
           );
         })}
       </div>
+
+      <Dialog
+        open={runtimeDialogMode !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRuntimeDialogMode(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {runtimeDialogMode === "start" ? "Start Manual VM" : "Reset runtime timer"}
+            </DialogTitle>
+            <DialogDescription>
+              Target: {vm.namespace}/{vm.name}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="runtime-days">Runtime</Label>
+              <span className="font-medium text-sm tabular-nums">{durationLabel(runtimeDays)}</span>
+            </div>
+
+            <input
+              id="runtime-days"
+              type="range"
+              min="1"
+              max="7"
+              step="1"
+              value={runtimeDays === 30 ? 7 : runtimeDays}
+              disabled={runtimeDays === 30}
+              onChange={(event) => {
+                setRuntimeDays(Number(event.target.value) as ManualRuntimeDurationDays);
+              }}
+              className="w-full accent-primary disabled:opacity-50"
+            />
+
+            <div className="grid grid-cols-7 gap-1 text-center text-muted-foreground text-xs tabular-nums">
+              {[1, 2, 3, 4, 5, 6, 7].map((day) => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant={runtimeDays === 30 ? "outline" : "default"}
+                onClick={() => setRuntimeDays(runtimeDays === 30 ? 7 : runtimeDays)}
+              >
+                1-7 days
+              </Button>
+              <Button
+                type="button"
+                variant={runtimeDays === 30 ? "default" : "outline"}
+                onClick={() => setRuntimeDays(30)}
+              >
+                30 days
+              </Button>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isPending || isResettingRuntime}
+              onClick={() => setRuntimeDialogMode(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={isPending || isResettingRuntime}
+              onClick={submitRuntimeDialog}
+            >
+              {runtimeDialogMode === "start" ? "Start" : "Reset"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={pendingAction !== null}

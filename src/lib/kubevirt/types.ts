@@ -4,6 +4,8 @@ export type VmPowerState = "online" | "offline" | "transitioning" | "unknown";
 
 export type VmAction = "start" | "stop" | "reboot" | "force-stop";
 
+export type ManualRuntimeDurationDays = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 30;
+
 export type OperationType = "snapshot" | "backup" | "restore" | "cleanup" | "restore-recovery";
 
 export interface KubeMetadata {
@@ -320,6 +322,14 @@ export interface VmOperation {
   snapshotName?: string;
 }
 
+export interface ManualRuntimeSummary {
+  startedAt?: string;
+  expiresAt?: string;
+  durationDays?: ManualRuntimeDurationDays;
+  vmiUid?: string;
+  stopRequestedAt?: string;
+}
+
 export interface VirtualMachineSummary {
   id: string;
   uid?: string;
@@ -332,6 +342,8 @@ export interface VirtualMachineSummary {
   nodeName?: string;
   ipAddresses: string[];
   runStrategy: string;
+  runningSince?: string;
+  manualRuntime?: ManualRuntimeSummary;
   conditions: KubeCondition[];
   activeOperations: VmOperation[];
 }

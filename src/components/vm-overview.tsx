@@ -52,12 +52,17 @@ const lifecycleTextClasses: Record<VmPowerState, string> = {
 };
 
 function VmLifecycleText({ vm }: { vm: VirtualMachineSummary }) {
+  const runningText =
+    vm.powerState === "online" && vm.runningSince
+      ? `Running ${formatElapsedSince(vm.runningSince)}`
+      : formatReady(vm.ready);
+
   return (
     <div className="space-y-0.5">
       <p className={cn("font-medium text-sm", lifecycleTextClasses[vm.powerState])}>
         {vm.printableStatus}
       </p>
-      <p className="text-muted-foreground text-xs">{formatReady(vm.ready)}</p>
+      <p className="text-muted-foreground text-xs">{runningText}</p>
     </div>
   );
 }

@@ -61,12 +61,27 @@ describe("KubeVirt status normalization", () => {
 
   it("builds summaries with readiness and active operations", () => {
     const vm: KubeVirtVirtualMachine = {
-      metadata: { name: "vm-01", namespace: "windows", uid: "uid-1" },
+      metadata: {
+        name: "vm-01",
+        namespace: "windows",
+        uid: "uid-1",
+        annotations: {
+          "vm-manager.skyway.tools/manual-runtime-started-at": "2026-05-19T10:00:00Z",
+          "vm-manager.skyway.tools/manual-runtime-expires-at": "2026-05-26T10:00:00Z",
+          "vm-manager.skyway.tools/manual-runtime-duration-days": "7",
+          "vm-manager.skyway.tools/manual-runtime-vmi-uid": "vmi-uid-1",
+        },
+      },
       spec: { runStrategy: "Manual" },
       status: { printableStatus: "Running", ready: true },
     };
     const vmi: KubeVirtVirtualMachineInstance = {
-      metadata: { name: "vm-01", namespace: "windows" },
+      metadata: {
+        name: "vm-01",
+        namespace: "windows",
+        uid: "vmi-uid-1",
+        creationTimestamp: "2026-05-19T09:58:00Z",
+      },
       status: { nodeName: "node-a", interfaces: [{ ipAddress: "10.0.0.10" }] },
     };
     const snapshot: KubeVirtVirtualMachineSnapshot = {
@@ -82,6 +97,12 @@ describe("KubeVirt status normalization", () => {
       ready: true,
       nodeName: "node-a",
       ipAddresses: ["10.0.0.10"],
+      runningSince: "2026-05-19T09:58:00Z",
+      manualRuntime: {
+        expiresAt: "2026-05-26T10:00:00Z",
+        durationDays: 7,
+        vmiUid: "vmi-uid-1",
+      },
       activeOperations: [{ type: "snapshot", name: "snap-a", phase: "InProgress" }],
     });
   });

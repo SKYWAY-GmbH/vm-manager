@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { ALLOWED_MANUAL_RUNTIME_DAYS, isAllowedManualRuntimeDays } from "./manual-runtime";
 import type {
+  ManualRuntimeDurationDays,
   ValidationResult,
   VirtualMachineBackupSummary,
   VirtualMachineSnapshotSummary,
@@ -10,6 +12,13 @@ import type {
 const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 
 export const vmActionSchema = z.enum(["start", "stop", "reboot", "force-stop"]);
+
+export const manualRuntimeDurationDaysSchema = z
+  .number()
+  .int()
+  .refine((value): value is ManualRuntimeDurationDays => isAllowedManualRuntimeDays(value), {
+    message: `Runtime timeout must be one of: ${ALLOWED_MANUAL_RUNTIME_DAYS.join(", ")} days.`,
+  });
 
 export const snapshotNameSchema = z
   .string()

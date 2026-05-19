@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+vi.mock("./manual-runtime-reconciler", () => ({
+  ensureManualRuntimeReconcilerStarted: vi.fn(),
+}));
 
 const customClient = vi.hoisted(() => ({
   createNamespacedCustomObject: vi.fn(),
@@ -43,7 +46,19 @@ const longhornApi = vi.hoisted(() => ({
 
 vi.mock("./longhorn-api", () => longhornApi);
 
-import { createVirtualMachineSnapshot, restoreVirtualMachineBackup } from "./service";
+import {
+  VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY,
+  VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY,
+  VM_MANAGER_MANUAL_RUNTIME_STARTED_AT_KEY,
+  VM_MANAGER_MANUAL_RUNTIME_STOP_REQUESTED_AT_KEY,
+  VM_MANAGER_MANUAL_RUNTIME_VMI_UID_KEY,
+} from "./manual-runtime";
+import {
+  createVirtualMachineSnapshot,
+  performVirtualMachineAction,
+  resetVirtualMachineManualRuntimeTimeout,
+  restoreVirtualMachineBackup,
+} from "./service";
 import type {
   KubeLonghornBackup,
   KubeLonghornVolume,
@@ -79,6 +94,26 @@ const vm: KubeVirtVirtualMachine = {
 const runningVm: KubeVirtVirtualMachine = {
   ...vm,
   status: { printableStatus: "Running", ready: true, created: true },
+};
+
+const alwaysVm: KubeVirtVirtualMachine = {
+  ...vm,
+  spec: {
+    ...vm.spec,
+    runStrategy: "Always",
+  },
+};
+
+const runningAlwaysVm: KubeVirtVirtualMachine = {
+  ...alwaysVm,
+  status: { printableStatus: "Running", ready: true, created: true },
+};
+
+const manualRuntimeAnnotations = {
+  [VM_MANAGER_MANUAL_RUNTIME_STARTED_AT_KEY]: "2026-05-19T10:00:00Z",
+  [VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY]: "2026-05-26T10:00:00Z",
+  [VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY]: "7",
+  [VM_MANAGER_MANUAL_RUNTIME_VMI_UID_KEY]: "vmi-uid-1",
 };
 
 const pvc: KubePersistentVolumeClaim = {
@@ -223,6 +258,261 @@ function setupBase({
 describe("Longhorn rootdisk operations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("starts Manual VMs with runtime timeout annotations", async () => {
+    setupBase();
+    const runningVmi: KubeVirtVirtualMachineInstance = {
+      metadata: {
+        name: "vm-01",
+        namespace: "windows",
+        uid: "vmi-uid-1",
+        creationTimestamp: "2026-05-19T10:00:00Z",
+      },
+      status: { phase: "Running" },
+    };
+    customClient.getNamespacedCustomObject.mockImplementation(
+      ({ plural }: { plural: string; name: string }) => {
+        if (plural === "virtualmachines") {
+          return Promise.resolve(vm);
+        }
+
+        if (plural === "virtualmachineinstances") {
+          const startSubmitted = rawKubeRequest.mock.calls.some((call) =>
+            String(call[1]).endsWith("/start"),
+          );
+          return startSubmitted ? Promise.resolve(runningVmi) : Promise.reject(notFoundError());
+        }
+
+        if (plural === "volumes") {
+          return Promise.resolve(detachedVolume);
+        }
+
+        return Promise.reject(notFoundError());
+      },
+    );
+
+    await expect(
+      performVirtualMachineAction("windows", "vm-01", "start", { timeoutDays: 3 }),
+    ).resolves.toMatchObject({ name: "vm-01" });
+
+    expect(rawKubeRequest).toHaveBeenCalledWith(
+      "PUT",
+      "/apis/subresources.kubevirt.io/v1/namespaces/windows/virtualmachines/vm-01/start",
+      expect.objectContaining({ kind: "StartOptions" }),
+    );
+    expect(patchNamespacedCustomObjectMergePatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        namespace: "windows",
+        name: "vm-01",
+        body: {
+          metadata: {
+            annotations: {
+              [VM_MANAGER_MANUAL_RUNTIME_STARTED_AT_KEY]: "2026-05-19T10:00:00.000Z",
+              [VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY]: "2026-05-22T10:00:00.000Z",
+              [VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY]: "3",
+              [VM_MANAGER_MANUAL_RUNTIME_VMI_UID_KEY]: "vmi-uid-1",
+              [VM_MANAGER_MANUAL_RUNTIME_STOP_REQUESTED_AT_KEY]: null,
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it("rejects Manual starts without a runtime timeout", async () => {
+    setupBase();
+
+    await expect(performVirtualMachineAction("windows", "vm-01", "start")).rejects.toMatchObject({
+      status: 400,
+    });
+
+    expect(rawKubeRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects timeout payloads for non-Manual VM starts", async () => {
+    setupBase({ virtualMachine: alwaysVm });
+
+    await expect(
+      performVirtualMachineAction("windows", "vm-01", "start", { timeoutDays: 7 }),
+    ).rejects.toMatchObject({
+      status: 409,
+    });
+
+    expect(rawKubeRequest).not.toHaveBeenCalled();
+  });
+
+  it("leaves Always VM starts untouched when no timeout is provided", async () => {
+    setupBase({ virtualMachine: alwaysVm });
+
+    await expect(performVirtualMachineAction("windows", "vm-01", "start")).resolves.toMatchObject({
+      name: "vm-01",
+    });
+
+    expect(rawKubeRequest).toHaveBeenCalledWith(
+      "PUT",
+      "/apis/subresources.kubevirt.io/v1/namespaces/windows/virtualmachines/vm-01/start",
+      expect.objectContaining({ kind: "StartOptions" }),
+    );
+    expect(patchNamespacedCustomObjectMergePatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        namespace: "windows",
+        name: "vm-01",
+        body: expect.objectContaining({
+          metadata: {
+            annotations: expect.objectContaining({
+              [VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY]: expect.anything(),
+            }),
+          },
+        }),
+      }),
+    );
+  });
+
+  it("clears Manual runtime annotations when stopping", async () => {
+    setupBase({
+      virtualMachine: {
+        ...runningVm,
+        metadata: {
+          ...runningVm.metadata,
+          annotations: manualRuntimeAnnotations,
+        },
+      },
+      vmi: {
+        metadata: { name: "vm-01", namespace: "windows", uid: "vmi-uid-1" },
+        status: { phase: "Running" },
+      },
+    });
+
+    await expect(performVirtualMachineAction("windows", "vm-01", "stop")).resolves.toMatchObject({
+      name: "vm-01",
+    });
+
+    expect(rawKubeRequest).toHaveBeenCalledWith(
+      "PUT",
+      "/apis/subresources.kubevirt.io/v1/namespaces/windows/virtualmachines/vm-01/stop",
+      expect.objectContaining({ kind: "StopOptions" }),
+    );
+    expect(patchNamespacedCustomObjectMergePatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        namespace: "windows",
+        name: "vm-01",
+        body: {
+          metadata: {
+            annotations: {
+              [VM_MANAGER_MANUAL_RUNTIME_STARTED_AT_KEY]: null,
+              [VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY]: null,
+              [VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY]: null,
+              [VM_MANAGER_MANUAL_RUNTIME_VMI_UID_KEY]: null,
+              [VM_MANAGER_MANUAL_RUNTIME_STOP_REQUESTED_AT_KEY]: null,
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it("does not clear timeout annotations for Always VMs", async () => {
+    setupBase({
+      virtualMachine: {
+        ...runningAlwaysVm,
+        metadata: {
+          ...runningAlwaysVm.metadata,
+          annotations: manualRuntimeAnnotations,
+        },
+      },
+      vmi: {
+        metadata: { name: "vm-01", namespace: "windows", uid: "vmi-uid-1" },
+        status: { phase: "Running" },
+      },
+    });
+
+    await expect(performVirtualMachineAction("windows", "vm-01", "stop")).resolves.toMatchObject({
+      name: "vm-01",
+    });
+
+    expect(patchNamespacedCustomObjectMergePatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: {
+          metadata: {
+            annotations: {
+              [VM_MANAGER_MANUAL_RUNTIME_STARTED_AT_KEY]: null,
+              [VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY]: null,
+              [VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY]: null,
+              [VM_MANAGER_MANUAL_RUNTIME_VMI_UID_KEY]: null,
+              [VM_MANAGER_MANUAL_RUNTIME_STOP_REQUESTED_AT_KEY]: null,
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it("resets running Manual VM runtime timeout", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-21T12:00:00Z"));
+    try {
+      setupBase({
+        virtualMachine: {
+          ...runningVm,
+          metadata: {
+            ...runningVm.metadata,
+            annotations: manualRuntimeAnnotations,
+          },
+        },
+        vmi: {
+          metadata: {
+            name: "vm-01",
+            namespace: "windows",
+            uid: "vmi-uid-1",
+            creationTimestamp: "2026-05-19T10:00:00Z",
+          },
+          status: { phase: "Running" },
+        },
+      });
+
+      await expect(
+        resetVirtualMachineManualRuntimeTimeout("windows", "vm-01", 30),
+      ).resolves.toMatchObject({ name: "vm-01" });
+
+      expect(patchNamespacedCustomObjectMergePatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          namespace: "windows",
+          name: "vm-01",
+          body: {
+            metadata: {
+              annotations: {
+                [VM_MANAGER_MANUAL_RUNTIME_STARTED_AT_KEY]: "2026-05-21T12:00:00.000Z",
+                [VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY]: "2026-06-20T12:00:00.000Z",
+                [VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY]: "30",
+                [VM_MANAGER_MANUAL_RUNTIME_VMI_UID_KEY]: "vmi-uid-1",
+                [VM_MANAGER_MANUAL_RUNTIME_STOP_REQUESTED_AT_KEY]: null,
+              },
+            },
+          },
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects timeout resets for non-Manual VMs", async () => {
+    setupBase({
+      virtualMachine: runningAlwaysVm,
+      vmi: {
+        metadata: { name: "vm-01", namespace: "windows", uid: "vmi-uid-1" },
+        status: { phase: "Running" },
+      },
+    });
+
+    await expect(
+      resetVirtualMachineManualRuntimeTimeout("windows", "vm-01", 7),
+    ).rejects.toMatchObject({
+      status: 409,
+    });
+
+    expect(patchNamespacedCustomObjectMergePatch).not.toHaveBeenCalled();
   });
 
   it("maintenance-attaches stopped VMs before creating rootdisk snapshots", async () => {

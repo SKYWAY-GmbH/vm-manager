@@ -5,6 +5,7 @@ import {
   VM_MANAGER_OPERATION_STARTED_AT_KEY,
   VM_MANAGER_OPERATION_TYPE_KEY,
 } from "./management";
+import { parseManualRuntimeAnnotations } from "./manual-runtime";
 import { compareTimestampsDesc, firstTimestamp } from "./timestamps";
 import type {
   KubeCondition,
@@ -420,6 +421,9 @@ export function toVmSummary(
   const name = vm.metadata?.name ?? "unknown";
   const namespace = vm.metadata?.namespace ?? "default";
   const powerState = normalizePowerState(vm, vmi);
+  const runStrategy = getRunStrategy(vm);
+  const runningSince =
+    vmi && !isTerminalVmi(vmi) ? firstTimestamp(vmi.metadata?.creationTimestamp) : undefined;
 
   return {
     id: objectKey(namespace, name),
@@ -432,7 +436,12 @@ export function toVmSummary(
     ready: getVmReady(vm),
     nodeName: vmi?.status?.nodeName ?? vm.status?.nodeName,
     ipAddresses: getIpAddresses(vmi),
-    runStrategy: getRunStrategy(vm),
+    runStrategy,
+    runningSince,
+    manualRuntime:
+      runStrategy === "Manual"
+        ? parseManualRuntimeAnnotations(vm.metadata?.annotations)
+        : undefined,
     conditions: vm.status?.conditions ?? [],
     activeOperations: getActiveOperations(vm, vmi, snapshots, restores),
   };

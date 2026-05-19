@@ -5,6 +5,7 @@ import type {
   VirtualMachineSummary,
 } from "./types";
 import {
+  manualRuntimeDurationDaysSchema,
   validateActionForVm,
   validateBackupRestorePreconditions,
   validateRestorePreconditions,
@@ -87,6 +88,20 @@ describe("action validation", () => {
     expect(validateActionForVm("stop", restoringVm).ok).toBe(false);
     expect(validateActionForVm("reboot", restoringVm).ok).toBe(false);
     expect(validateActionForVm("force-stop", restoringVm).ok).toBe(false);
+  });
+});
+
+describe("manual runtime duration validation", () => {
+  it("allows 1-7 days and 30 days", () => {
+    expect(manualRuntimeDurationDaysSchema.safeParse(1).success).toBe(true);
+    expect(manualRuntimeDurationDaysSchema.safeParse(7).success).toBe(true);
+    expect(manualRuntimeDurationDaysSchema.safeParse(30).success).toBe(true);
+  });
+
+  it("rejects unsupported durations", () => {
+    expect(manualRuntimeDurationDaysSchema.safeParse(0).success).toBe(false);
+    expect(manualRuntimeDurationDaysSchema.safeParse(8).success).toBe(false);
+    expect(manualRuntimeDurationDaysSchema.safeParse(1.5).success).toBe(false);
   });
 });
 

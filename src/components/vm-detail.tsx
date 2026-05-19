@@ -6,7 +6,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SnapshotControls } from "@/components/snapshot-controls";
 import { Button } from "@/components/ui/button";
 import { VmActionButtons } from "@/components/vm-action-menu";
-import { formatDateTime, formatElapsedSince, formatIpList, formatReady } from "@/lib/format";
+import {
+  formatDateTime,
+  formatElapsedSince,
+  formatIpList,
+  formatReady,
+  formatTimeUntil,
+} from "@/lib/format";
 import type { VirtualMachineDetail, VmOperation } from "@/lib/kubevirt/types";
 
 const DETAIL_REFRESH_INTERVAL_MS = 1_000;
@@ -172,6 +178,19 @@ export function VmDetail({ vm: initialVm }: { vm: VirtualMachineDetail }) {
           <Field label="Node" value={vm.nodeName ?? "Unscheduled"} />
           <Field label="Lifecycle mode" value={vm.runStrategy} />
           <Field label="IP addresses" value={formatIpList(vm.ipAddresses)} />
+          {vm.runningSince ? (
+            <Field label="Running for" value={formatElapsedSince(vm.runningSince)} />
+          ) : null}
+          {vm.runStrategy === "Manual" ? (
+            <Field
+              label="Runtime timer"
+              value={
+                vm.manualRuntime?.expiresAt
+                  ? formatTimeUntil(vm.manualRuntime.expiresAt)
+                  : "Unavailable"
+              }
+            />
+          ) : null}
           <Field label="Created" value={formatDateTime(vm.createdAt)} />
           <Field label="UID" value={vm.uid ?? "Unavailable"} />
         </div>
