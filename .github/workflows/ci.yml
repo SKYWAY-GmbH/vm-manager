@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GITLEAKS_VERSION: 8.30.1
+
 jobs:
   check:
     name: Check
@@ -44,8 +47,8 @@ jobs:
       - name: Install gitleaks
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
-          curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh -o "$RUNNER_TEMP/install-gitleaks.sh"
-          sh "$RUNNER_TEMP/install-gitleaks.sh" -b "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o "$RUNNER_TEMP/gitleaks.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/bin" gitleaks
           "$RUNNER_TEMP/bin/gitleaks" version
 
       - name: Gitleaks
