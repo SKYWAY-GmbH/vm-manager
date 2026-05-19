@@ -637,11 +637,13 @@ export function buildRestoredPvc(
       name: oldPvc.metadata?.name,
       namespace: oldPvc.metadata?.namespace,
       labels: oldPvc.metadata?.labels,
-      annotations: oldPvc.metadata?.annotations,
     },
     spec: {
-      ...(oldPvc.spec ?? {}),
+      accessModes: oldPvc.spec?.accessModes,
+      resources: oldPvc.spec?.resources,
+      storageClassName: oldPvc.spec?.storageClassName,
       volumeName: newPvName,
+      volumeMode: oldPvc.spec?.volumeMode,
     },
   };
 }

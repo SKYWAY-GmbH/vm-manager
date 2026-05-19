@@ -4,6 +4,7 @@ vi.mock("server-only", () => ({}));
 
 import {
   buildRestoredPv,
+  buildRestoredPvc,
   restoreVolumeName,
   sanitizeLonghornName,
   shortenLonghornName,
@@ -91,5 +92,39 @@ describe("Longhorn helper functions", () => {
         "new-volume",
       ).spec?.claimRef,
     ).toEqual({ namespace: "windows", name: "rootdisk-pvc" });
+  });
+
+  it("builds restored PVCs without CDI source or stale binding metadata", () => {
+    const oldPvc: KubePersistentVolumeClaim = {
+      metadata: {
+        namespace: "windows",
+        name: "rootdisk-pvc",
+        labels: { app: "vm-01" },
+        annotations: {
+          "pv.kubernetes.io/bind-completed": "yes",
+          "cdi.kubevirt.io/storage.populatedFor": "rootdisk-pvc",
+        },
+      },
+      spec: {
+        accessModes: ["ReadWriteOnce"],
+        dataSource: { kind: "PersistentVolumeClaim", name: "source-pvc" },
+        dataSourceRef: { kind: "PersistentVolumeClaim", name: "source-pvc" },
+        resources: { requests: { storage: "20Gi" } },
+        storageClassName: "longhorn",
+        volumeMode: "Filesystem",
+        volumeName: "old-pv",
+      },
+    };
+
+    const restored = buildRestoredPvc(oldPvc, "new-pv");
+
+    expect(restored.metadata?.annotations).toBeUndefined();
+    expect(restored.spec).toEqual({
+      accessModes: ["ReadWriteOnce"],
+      resources: { requests: { storage: "20Gi" } },
+      storageClassName: "longhorn",
+      volumeMode: "Filesystem",
+      volumeName: "new-pv",
+    });
   });
 });
