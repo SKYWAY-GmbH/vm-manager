@@ -1,10 +1,80 @@
 import { z } from "zod";
 
+function readQuotedValue(value: string): string | undefined {
+  if (!value.startsWith('"')) {
+    return undefined;
+  }
+
+  let escaped = false;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (character === '"') {
+      return value.slice(0, index + 1);
+    }
+  }
+
+  return undefined;
+}
+
+function parseKubernetesStatusMessage(message: string): string | undefined {
+  const bodyMarker = " Body: ";
+  const bodyIndex = message.indexOf(bodyMarker);
+  if (bodyIndex === -1) {
+    return undefined;
+  }
+
+  const bodyAndRemainder = message.slice(bodyIndex + bodyMarker.length).trimStart();
+  const rawBody = bodyAndRemainder.startsWith('"')
+    ? readQuotedValue(bodyAndRemainder)
+    : bodyAndRemainder.split(" Headers: ")[0];
+
+  if (!rawBody) {
+    return undefined;
+  }
+
+  try {
+    const bodyText = rawBody.startsWith('"') ? (JSON.parse(rawBody) as unknown) : rawBody;
+    if (typeof bodyText !== "string") {
+      return undefined;
+    }
+
+    const body = JSON.parse(bodyText) as unknown;
+    if (typeof body === "object" && body !== null && "message" in body) {
+      const statusMessage = body.message;
+      return typeof statusMessage === "string" ? statusMessage : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+export function normalizeKubernetesErrorMessage(message: string): string {
+  const statusMessage = parseKubernetesStatusMessage(message) ?? message;
+
+  if (statusMessage.includes("snapshot feature gate not enabled")) {
+    return "KubeVirt snapshot support is disabled in this cluster. Enable the Snapshot feature gate in the KubeVirt CR, then try again.";
+  }
+
+  return statusMessage;
+}
+
 export class ApiError extends Error {
   readonly status: number;
 
   constructor(status: number, message: string) {
-    super(message);
+    super(normalizeKubernetesErrorMessage(message));
     this.name = "ApiError";
     this.status = status;
   }
@@ -39,13 +109,13 @@ export function toApiError(error: unknown): ApiError {
   if (typeof status === "number") {
     const message =
       typeof error === "object" && error !== null && "message" in error
-        ? String(error.message)
+        ? normalizeKubernetesErrorMessage(String(error.message))
         : "Kubernetes API request failed.";
     return new ApiError(status, message);
   }
 
   if (error instanceof Error) {
-    return new ApiError(500, error.message);
+    return new ApiError(500, normalizeKubernetesErrorMessage(error.message));
   }
 
   return new ApiError(500, "Unexpected error.");
