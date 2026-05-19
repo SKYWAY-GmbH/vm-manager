@@ -10,12 +10,14 @@ const client = vi.hoisted(() => ({
   listNamespacedCustomObject: vi.fn(),
 }));
 
+const rawKubeRequest = vi.hoisted(() => vi.fn());
+
 vi.mock("./client", () => ({
   getCustomObjectsClient: () => client,
-  requestKubeJson: vi.fn(),
+  requestKubeJson: rawKubeRequest,
 }));
 
-import { createVirtualMachineRestore } from "./service";
+import { createVirtualMachineRestore, performVirtualMachineAction } from "./service";
 import type { KubeVirtVirtualMachineInstance } from "./types";
 
 function notFoundError() {
@@ -77,6 +79,7 @@ function setupRestore(vmis: Array<KubeVirtVirtualMachineInstance | "not-found">)
     Promise.resolve(body),
   );
   client.deleteNamespacedCustomObject.mockResolvedValue({});
+  rawKubeRequest.mockResolvedValue({});
 }
 
 describe("createVirtualMachineRestore", () => {
@@ -114,5 +117,23 @@ describe("createVirtualMachineRestore", () => {
 
     expect(client.deleteNamespacedCustomObject).not.toHaveBeenCalled();
     expect(client.createNamespacedCustomObject).toHaveBeenCalled();
+  });
+});
+
+describe("performVirtualMachineAction", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses PUT for KubeVirt VM subresource actions", async () => {
+    setupRestore(["not-found"]);
+
+    await performVirtualMachineAction("windows", "vm-01", "start");
+
+    expect(rawKubeRequest).toHaveBeenCalledWith(
+      "PUT",
+      "/apis/subresources.kubevirt.io/v1/namespaces/windows/virtualmachines/vm-01/start",
+      expect.objectContaining({ kind: "StartOptions" }),
+    );
   });
 });

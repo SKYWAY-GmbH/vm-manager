@@ -322,14 +322,14 @@ export async function performVirtualMachineAction(
   const basePath = `/apis/${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}/namespaces/${encodedNamespace}/virtualmachines/${encodedName}`;
 
   if (action === "start") {
-    await requestKubeJson("POST", `${basePath}/start`, {
+    await requestKubeJson("PUT", `${basePath}/start`, {
       apiVersion: `${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}`,
       kind: "StartOptions",
     });
   }
 
   if (action === "stop" || action === "force-stop") {
-    await requestKubeJson("POST", `${basePath}/stop`, {
+    await requestKubeJson("PUT", `${basePath}/stop`, {
       apiVersion: `${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}`,
       kind: "StopOptions",
       ...(action === "force-stop" ? { gracePeriod: 0 } : {}),
@@ -337,7 +337,7 @@ export async function performVirtualMachineAction(
   }
 
   if (action === "reboot") {
-    await requestKubeJson("POST", `${basePath}/restart`, {
+    await requestKubeJson("PUT", `${basePath}/restart`, {
       apiVersion: `${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}`,
       kind: "RestartOptions",
     });

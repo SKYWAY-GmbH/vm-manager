@@ -85,7 +85,7 @@ function getErrorMessage(body: unknown, fallback: string): string {
 }
 
 export async function requestKubeJson(
-  method: "POST",
+  method: "POST" | "PUT",
   path: string,
   body?: unknown,
 ): Promise<unknown> {
@@ -134,7 +134,10 @@ export async function requestKubeJson(
 
         if (statusCode < 200 || statusCode >= 300) {
           reject(
-            new ApiError(statusCode, getErrorMessage(parsed, "Kubernetes API request failed.")),
+            new ApiError(
+              statusCode,
+              getErrorMessage(parsed, `Kubernetes API request failed with HTTP ${statusCode}.`),
+            ),
           );
           return;
         }
