@@ -44,8 +44,9 @@ jobs:
       - name: Install gitleaks
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
-          curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/install.sh | sh -s -- -b "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh -o "$RUNNER_TEMP/install-gitleaks.sh"
+          sh "$RUNNER_TEMP/install-gitleaks.sh" -b "$RUNNER_TEMP/bin"
+          "$RUNNER_TEMP/bin/gitleaks" version
 
       - name: Gitleaks
-        run: gitleaks detect --redact
+        run: "$RUNNER_TEMP/bin/gitleaks" detect --redact
