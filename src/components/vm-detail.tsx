@@ -3,21 +3,9 @@ import Link from "next/link";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { SnapshotControls } from "@/components/snapshot-controls";
 import { Button } from "@/components/ui/button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { VmActionButtons } from "@/components/vm-action-menu";
 import { formatDateTime, formatElapsedSince, formatIpList, formatReady } from "@/lib/format";
-import type {
-  VirtualMachineDetail,
-  VirtualMachineRestoreSummary,
-  VmOperation,
-} from "@/lib/kubevirt/types";
+import type { VirtualMachineDetail, VmOperation } from "@/lib/kubevirt/types";
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -29,7 +17,19 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function operationTitle(operation: VmOperation) {
-  return operation.type === "restore" ? "Restore in progress" : "Snapshot in progress";
+  if (operation.type === "backup") {
+    return "Backup in progress";
+  }
+
+  if (operation.type === "restore") {
+    return "Restore in progress";
+  }
+
+  if (operation.type === "cleanup") {
+    return "Cleanup in progress";
+  }
+
+  return "Snapshot in progress";
 }
 
 function operationSubject(operation: VmOperation) {
@@ -41,11 +41,11 @@ function operationSubject(operation: VmOperation) {
     return `Creating ${operation.name}`;
   }
 
-  return operation.name;
-}
+  if (operation.type === "backup") {
+    return `Creating ${operation.name}`;
+  }
 
-function restoreSnapshotLabel(restore: VirtualMachineRestoreSummary) {
-  return restore.snapshotName ?? "Unknown snapshot";
+  return operation.name;
 }
 
 export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
@@ -106,54 +106,6 @@ export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
       </section>
 
       <SnapshotControls vm={vm} />
-
-      <section className="rounded-lg border border-border bg-card">
-        <div className="border-border border-b px-4 py-3">
-          <h2 className="font-medium text-sm">Restore history</h2>
-        </div>
-        <div className="hidden overflow-x-auto md:block">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Snapshot</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {vm.restores.map((restore) => (
-                <TableRow key={restore.name}>
-                  <TableCell className="font-medium">{restoreSnapshotLabel(restore)}</TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {restore.message ?? restore.phase}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {formatDateTime(restore.createdAt)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-        <div className="divide-y divide-border md:hidden">
-          {vm.restores.map((restore) => (
-            <div key={restore.name} className="space-y-3 p-4">
-              <div className="min-w-0">
-                <p className="break-words font-medium text-sm">{restoreSnapshotLabel(restore)}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <Field label="Status" value={restore.message ?? restore.phase} />
-                <Field label="Created" value={formatDateTime(restore.createdAt)} />
-              </div>
-            </div>
-          ))}
-        </div>
-        {vm.restores.length === 0 ? (
-          <div className="px-4 py-10 text-center text-muted-foreground text-sm">
-            No restore history exists for this VM.
-          </div>
-        ) : null}
-      </section>
     </div>
   );
 }

@@ -1,24 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const service = vi.hoisted(() => ({
+  createVirtualMachineBackup: vi.fn(),
   createVirtualMachineRestore: vi.fn(),
   createVirtualMachineSnapshot: vi.fn(),
+  discardVirtualMachineRollback: vi.fn(),
+  forceClearVirtualMachineOperation: vi.fn(),
   getVirtualMachine: vi.fn(),
+  listVirtualMachineBackups: vi.fn(),
   listVirtualMachineRestores: vi.fn(),
   listVirtualMachineSnapshots: vi.fn(),
   listVirtualMachines: vi.fn(),
   performVirtualMachineAction: vi.fn(),
+  restoreVirtualMachineBackup: vi.fn(),
+  restoreVirtualMachineSnapshot: vi.fn(),
 }));
 
 vi.mock("@/lib/kubevirt/service", () => service);
 
 import { POST as postAction } from "./[namespace]/[name]/actions/route";
+import { POST as postBackup } from "./[namespace]/[name]/backups/route";
+import { DELETE as deleteOperation } from "./[namespace]/[name]/operations/route";
 import { POST as postRestore } from "./[namespace]/[name]/restores/route";
+import { DELETE as deleteRollback } from "./[namespace]/[name]/rollbacks/[pvName]/route";
 import { POST as postSnapshot } from "./[namespace]/[name]/snapshots/route";
 import { GET as getVms } from "./route";
 
 function context(namespace = "windows", name = "vm-01") {
   return { params: Promise.resolve({ namespace, name }) };
+}
+
+function rollbackContext(namespace = "windows", name = "vm-01", pvName = "pv-old") {
+  return { params: Promise.resolve({ namespace, name, pvName }) };
 }
 
 describe("VM route handlers", () => {
@@ -82,23 +95,83 @@ describe("VM route handlers", () => {
     );
   });
 
-  it("creates restores from a snapshot", async () => {
-    service.createVirtualMachineRestore.mockResolvedValue({ name: "restore-a" });
+  it("creates custom-named backups", async () => {
+    service.createVirtualMachineBackup.mockResolvedValue({ name: "backup-a" });
 
-    const response = await postRestore(
+    const response = await postBackup(
       new Request("http://local", {
         method: "POST",
-        body: JSON.stringify({ snapshotName: "baseline" }),
+        body: JSON.stringify({ name: "backup-a", backupMode: "incremental" }),
       }),
       context(),
     );
 
     expect(response.status).toBe(201);
-    expect(service.createVirtualMachineRestore).toHaveBeenCalledWith(
+    expect(service.createVirtualMachineBackup).toHaveBeenCalledWith(
+      "windows",
+      "vm-01",
+      "backup-a",
+      "incremental",
+    );
+  });
+
+  it("creates restores from a snapshot", async () => {
+    service.restoreVirtualMachineSnapshot.mockResolvedValue({ name: "vm-01" });
+
+    const response = await postRestore(
+      new Request("http://local", {
+        method: "POST",
+        body: JSON.stringify({ sourceType: "snapshot", snapshotName: "baseline" }),
+      }),
+      context(),
+    );
+
+    expect(response.status).toBe(201);
+    expect(service.restoreVirtualMachineSnapshot).toHaveBeenCalledWith(
       "windows",
       "vm-01",
       "baseline",
-      undefined,
+    );
+  });
+
+  it("creates restores from a backup", async () => {
+    service.restoreVirtualMachineBackup.mockResolvedValue({ name: "vm-01" });
+
+    const response = await postRestore(
+      new Request("http://local", {
+        method: "POST",
+        body: JSON.stringify({ sourceType: "backup", backupName: "backup-a" }),
+      }),
+      context(),
+    );
+
+    expect(response.status).toBe(201);
+    expect(service.restoreVirtualMachineBackup).toHaveBeenCalledWith(
+      "windows",
+      "vm-01",
+      "backup-a",
+    );
+  });
+
+  it("force-clears VM operation annotations", async () => {
+    service.forceClearVirtualMachineOperation.mockResolvedValue({ name: "vm-01" });
+
+    const response = await deleteOperation(new Request("http://local"), context());
+
+    expect(response.status).toBe(200);
+    expect(service.forceClearVirtualMachineOperation).toHaveBeenCalledWith("windows", "vm-01");
+  });
+
+  it("discards rollback storage", async () => {
+    service.discardVirtualMachineRollback.mockResolvedValue({ name: "vm-01" });
+
+    const response = await deleteRollback(new Request("http://local"), rollbackContext());
+
+    expect(response.status).toBe(200);
+    expect(service.discardVirtualMachineRollback).toHaveBeenCalledWith(
+      "windows",
+      "vm-01",
+      "pv-old",
     );
   });
 });

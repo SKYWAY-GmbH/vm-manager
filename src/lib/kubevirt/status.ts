@@ -1,3 +1,10 @@
+import {
+  VM_MANAGER_OPERATION_MESSAGE_KEY,
+  VM_MANAGER_OPERATION_NAME_KEY,
+  VM_MANAGER_OPERATION_PHASE_KEY,
+  VM_MANAGER_OPERATION_STARTED_AT_KEY,
+  VM_MANAGER_OPERATION_TYPE_KEY,
+} from "./management";
 import type {
   KubeCondition,
   KubeVirtVirtualMachine,
@@ -162,6 +169,151 @@ function restoreMatchesVm(restore: KubeVirtVirtualMachineRestore, vmName: string
   return restore.spec?.target?.kind === "VirtualMachine" && restore.spec.target.name === vmName;
 }
 
+const operationTypes = new Set<VmOperation["type"]>([
+  "snapshot",
+  "backup",
+  "restore",
+  "cleanup",
+  "restore-recovery",
+]);
+
+function activeOperationFromAnnotations(
+  annotations: Record<string, string> | undefined,
+): VmOperation | undefined {
+  const type = annotations?.[VM_MANAGER_OPERATION_TYPE_KEY];
+  if (!type || !operationTypes.has(type as VmOperation["type"])) {
+    return undefined;
+  }
+
+  return {
+    type: type as VmOperation["type"],
+    name: annotations?.[VM_MANAGER_OPERATION_NAME_KEY] ?? type,
+    phase: annotations?.[VM_MANAGER_OPERATION_PHASE_KEY] ?? "Running",
+    createdAt: annotations?.[VM_MANAGER_OPERATION_STARTED_AT_KEY],
+    message: annotations?.[VM_MANAGER_OPERATION_MESSAGE_KEY],
+  };
+}
+
+function restoredPersistentVolumeClaims(restore: KubeVirtVirtualMachineRestore): Set<string> {
+  return new Set(
+    (restore.status?.restores ?? [])
+      .map((volumeRestore) => volumeRestore.persistentVolumeClaim)
+      .filter((name): name is string => Boolean(name)),
+  );
+}
+
+function vmPersistentVolumeClaims(vm: KubeVirtVirtualMachine): Set<string> {
+  return new Set(
+    (vm.spec?.template?.spec?.volumes ?? [])
+      .map((volume) => volume.persistentVolumeClaim?.claimName)
+      .filter((claimName): claimName is string => Boolean(claimName)),
+  );
+}
+
+function vmiPersistentVolumeClaims(vmi: KubeVirtVirtualMachineInstance | undefined): Set<string> {
+  return new Set(
+    (vmi?.status?.volumeStatus ?? [])
+      .map((volume) => volume.persistentVolumeClaimInfo?.claimName)
+      .filter((claimName): claimName is string => Boolean(claimName)),
+  );
+}
+
+function setsIntersect(left: Set<string>, right: Set<string>) {
+  for (const value of left) {
+    if (right.has(value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function latestCompletedRestoreForVm(
+  vmName: string,
+  restores: KubeVirtVirtualMachineRestore[],
+): KubeVirtVirtualMachineRestore | undefined {
+  return restores
+    .filter((restore) => restoreMatchesVm(restore, vmName))
+    .filter((restore) => restore.status?.complete === true)
+    .sort((left, right) =>
+      (right.status?.restoreTime ?? right.metadata?.creationTimestamp ?? "").localeCompare(
+        left.status?.restoreTime ?? left.metadata?.creationTimestamp ?? "",
+      ),
+    )[0];
+}
+
+function isStartingAfterRestore(
+  vm: KubeVirtVirtualMachine,
+  vmi: KubeVirtVirtualMachineInstance | undefined,
+) {
+  const printableStatus = vm.status?.printableStatus?.toLowerCase() ?? "";
+  const vmiPhase = vmi?.status?.phase?.toLowerCase();
+
+  return (
+    ["starting", "provisioning", "waiting"].some((status) => printableStatus.includes(status)) ||
+    (vmiPhase !== undefined && vmiPhase !== "running" && vmiPhase !== "succeeded")
+  );
+}
+
+function restoreRecoveryOperation(
+  vm: KubeVirtVirtualMachine,
+  vmi: KubeVirtVirtualMachineInstance | undefined,
+  restores: KubeVirtVirtualMachineRestore[],
+): VmOperation | undefined {
+  const vmName = vm.metadata?.name ?? "unknown";
+  const latestRestore = latestCompletedRestoreForVm(vmName, restores);
+  if (!latestRestore) {
+    return undefined;
+  }
+
+  const restoredPvcs = restoredPersistentVolumeClaims(latestRestore);
+  if (restoredPvcs.size === 0) {
+    return undefined;
+  }
+
+  const currentVmPvcs = vmPersistentVolumeClaims(vm);
+  const currentVmiPvcs = vmiPersistentVolumeClaims(vmi);
+  if (!setsIntersect(restoredPvcs, currentVmPvcs) && !setsIntersect(restoredPvcs, currentVmiPvcs)) {
+    return undefined;
+  }
+
+  const restoreSummary = toRestoreSummary(latestRestore);
+  if (vmi?.status?.phase?.toLowerCase() === "failed") {
+    return {
+      type: "restore-recovery",
+      name: restoreSummary.name,
+      phase: "Startup failed",
+      createdAt: restoreSummary.createdAt,
+      message: "Restore completed, but the restored VM failed while attaching or starting.",
+      snapshotName: restoreSummary.snapshotName,
+    };
+  }
+
+  if (isStartingAfterRestore(vm, vmi)) {
+    return {
+      type: "restore-recovery",
+      name: restoreSummary.name,
+      phase: "Starting",
+      createdAt: restoreSummary.createdAt,
+      message: "Restore completed. Waiting for the restored VM to attach volumes and become ready.",
+      snapshotName: restoreSummary.snapshotName,
+    };
+  }
+
+  if (vmi && vm.status?.ready !== true) {
+    return {
+      type: "restore-recovery",
+      name: restoreSummary.name,
+      phase: "Not ready",
+      createdAt: restoreSummary.createdAt,
+      message: "Restore completed. Waiting for the restored VM to report ready.",
+      snapshotName: restoreSummary.snapshotName,
+    };
+  }
+
+  return undefined;
+}
+
 export function toSnapshotSummary(
   snapshot: KubeVirtVirtualMachineSnapshot,
 ): VirtualMachineSnapshotSummary {
@@ -208,10 +360,17 @@ export function toRestoreSummary(
 }
 
 export function getActiveOperations(
-  vmName: string,
+  vm: KubeVirtVirtualMachine,
+  vmi: KubeVirtVirtualMachineInstance | undefined,
   snapshots: KubeVirtVirtualMachineSnapshot[],
   restores: KubeVirtVirtualMachineRestore[],
 ): VmOperation[] {
+  const annotationOperation = activeOperationFromAnnotations(vm.metadata?.annotations);
+  if (annotationOperation) {
+    return [annotationOperation];
+  }
+
+  const vmName = vm.metadata?.name ?? "unknown";
   const activeSnapshots = snapshots
     .filter((snapshot) => snapshotMatchesVm(snapshot, vmName))
     .filter((snapshot) => snapshot.status?.readyToUse !== true)
@@ -241,9 +400,13 @@ export function getActiveOperations(
       };
     });
 
-  return [...activeSnapshots, ...activeRestores].sort((left, right) =>
-    (right.createdAt ?? "").localeCompare(left.createdAt ?? ""),
-  );
+  const recoveryOperation = restoreRecoveryOperation(vm, vmi, restores);
+
+  return [
+    ...activeSnapshots,
+    ...activeRestores,
+    ...(recoveryOperation ? [recoveryOperation] : []),
+  ].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""));
 }
 
 export function toVmSummary(
@@ -269,6 +432,6 @@ export function toVmSummary(
     ipAddresses: getIpAddresses(vmi),
     runStrategy: getRunStrategy(vm),
     conditions: vm.status?.conditions ?? [],
-    activeOperations: getActiveOperations(name, snapshots, restores),
+    activeOperations: getActiveOperations(vm, vmi, snapshots, restores),
   };
 }

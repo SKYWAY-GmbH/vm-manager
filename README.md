@@ -7,10 +7,12 @@ The app has no built-in authentication and contains no secrets. Production acces
 ## Features
 
 - Lists KubeVirt `VirtualMachine` resources across all namespaces.
-- Shows power state, `printableStatus`, readiness, node, IP addresses, run strategy, and active snapshot/restore operations.
+- Shows power state, `printableStatus`, readiness, node, IP addresses, run strategy, and active storage operations.
 - Supports start, graceful stop, reboot, and force stop through the KubeVirt subresource API.
-- Supports custom-named `VirtualMachineSnapshot` creation.
-- Shows restore history and allows snapshot restore only when the VM is stopped and the snapshot is ready.
+- Supports custom-named Longhorn rootdisk snapshots and backups.
+- Shows fast Longhorn snapshots and Longhorn backups separately, including recurring backups.
+- Restores only the VM `rootdisk` Longhorn volume. KubeVirt `persistent-state-for-*` TPM/EFI PVCs are preserved as-is.
+- Keeps the previous rootdisk PV/Longhorn volume as rollback storage for 24 hours after backup restore, with an admin discard action.
 - Hides VMs labelled or annotated with `vm-manager.skyway.tools/managed=false`.
 
 ## Kubernetes Access
@@ -21,6 +23,14 @@ The server uses Kubernetes API credentials in this order:
 2. Local kubeconfig via `KUBECONFIG` or the default kubeconfig search path for development.
 
 The app never shells out to `kubectl` or `virtctl`.
+
+## Longhorn Access
+
+Set `LONGHORN_API_URL` when the Longhorn backend is not reachable at the in-cluster default:
+
+```text
+http://longhorn-backend.longhorn-system.svc:9500/v1
+```
 
 ## Development
 

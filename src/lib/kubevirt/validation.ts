@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type {
   ValidationResult,
+  VirtualMachineBackupSummary,
   VirtualMachineSnapshotSummary,
   VirtualMachineSummary,
   VmAction,
@@ -24,9 +25,15 @@ export const createSnapshotSchema = z.object({
   name: snapshotNameSchema,
 });
 
+export const createBackupSchema = z.object({
+  name: snapshotNameSchema,
+  backupMode: z.enum(["incremental", "full"]).optional(),
+});
+
 export const createRestoreSchema = z.object({
-  snapshotName: snapshotNameSchema,
-  restoreName: snapshotNameSchema.optional(),
+  sourceType: z.enum(["snapshot", "backup"]).optional(),
+  snapshotName: snapshotNameSchema.optional(),
+  backupName: snapshotNameSchema.optional(),
 });
 
 export function validateSnapshotName(name: string): ValidationResult {
@@ -42,11 +49,16 @@ export function hasActiveRestore(vm: VirtualMachineSummary): boolean {
   return vm.activeOperations.some((operation) => operation.type === "restore");
 }
 
+export function hasActiveOperation(vm: VirtualMachineSummary): boolean {
+  return vm.activeOperations.length > 0;
+}
+
 export function validateActionForVm(action: VmAction, vm: VirtualMachineSummary): ValidationResult {
-  if (hasActiveRestore(vm)) {
+  if (hasActiveOperation(vm)) {
     return {
       ok: false,
-      reason: "A restore is in progress. Wait until it finishes before changing VM power.",
+      reason:
+        "A VM storage operation is in progress. Wait until it finishes before changing power.",
     };
   }
 
@@ -89,8 +101,8 @@ export function validateRestorePreconditions(
     return { ok: false, reason: "Snapshot not found." };
   }
 
-  if (hasActiveRestore(vm)) {
-    return { ok: false, reason: "A restore is already in progress." };
+  if (hasActiveOperation(vm)) {
+    return { ok: false, reason: "A VM storage operation is already in progress." };
   }
 
   if (vm.powerState !== "offline") {
@@ -103,6 +115,29 @@ export function validateRestorePreconditions(
 
   if (snapshot.restoreBlockedReason) {
     return { ok: false, reason: snapshot.restoreBlockedReason };
+  }
+
+  return { ok: true };
+}
+
+export function validateBackupRestorePreconditions(
+  vm: VirtualMachineSummary,
+  backup: VirtualMachineBackupSummary | undefined,
+): ValidationResult {
+  if (!backup) {
+    return { ok: false, reason: "Backup not found." };
+  }
+
+  if (hasActiveOperation(vm)) {
+    return { ok: false, reason: "A VM storage operation is already in progress." };
+  }
+
+  if (vm.powerState !== "offline") {
+    return { ok: false, reason: "Stop the VM before restoring a backup." };
+  }
+
+  if (backup.readyToUse !== true) {
+    return { ok: false, reason: "Only completed backups can be restored." };
   }
 
   return { ok: true };

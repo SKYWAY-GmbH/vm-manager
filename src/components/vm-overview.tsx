@@ -30,7 +30,14 @@ function activityLabel(vm: VirtualMachineSummary) {
 
   return vm.activeOperations
     .map((operation) => {
-      const type = operation.type === "restore" ? "Restore" : "Snapshot";
+      const type =
+        operation.type === "restore"
+          ? "Restore"
+          : operation.type === "backup"
+            ? "Backup"
+            : operation.type === "cleanup"
+              ? "Cleanup"
+              : "Snapshot";
       const elapsed = operation.createdAt ? `, ${formatElapsedSince(operation.createdAt)}` : "";
       return `${type}: ${operation.phase}${elapsed}`;
     })

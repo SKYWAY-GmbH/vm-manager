@@ -168,7 +168,35 @@ describe("snapshot and restore summaries", () => {
     ];
 
     expect(
-      getActiveOperations("vm-01", snapshots, restores).map((operation) => operation.name),
+      getActiveOperations(
+        { metadata: { name: "vm-01", namespace: "windows" } },
+        undefined,
+        snapshots,
+        restores,
+      ).map((operation) => operation.name),
     ).toEqual(["pending", "restore"]);
+  });
+
+  it("uses VM operation annotations ahead of legacy snapshot resources", () => {
+    const operations = getActiveOperations(
+      {
+        metadata: {
+          name: "vm-01",
+          namespace: "windows",
+          annotations: {
+            "vm-manager.skyway.tools/operation-type": "backup",
+            "vm-manager.skyway.tools/operation-name": "backup-a",
+            "vm-manager.skyway.tools/operation-phase": "Running",
+          },
+        },
+      },
+      undefined,
+      [],
+      [],
+    );
+
+    expect(operations).toEqual([
+      expect.objectContaining({ type: "backup", name: "backup-a", phase: "Running" }),
+    ]);
   });
 });

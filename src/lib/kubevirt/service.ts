@@ -1,57 +1,76 @@
 import "server-only";
 
-import { getCustomObjectsClient, requestKubeJson } from "./client";
-import { ApiError, getErrorStatus } from "./errors";
+import { getCoreV1Client, getCustomObjectsClient, requestKubeJson } from "./client";
+import { ApiError } from "./errors";
+import {
+  backupsForVm,
+  buildRestoredPv,
+  buildRestoredPvc,
+  createLonghornBackup,
+  createLonghornSnapshot,
+  discardRollback,
+  ensureRollbackReaperStarted,
+  isNotFound,
+  items,
+  LONGHORN_GROUP,
+  LONGHORN_NAMESPACE,
+  LONGHORN_VERSION,
+  listLonghornBackups,
+  listLonghornBackupVolumes,
+  listLonghornSnapshots,
+  listRollbackPvs,
+  metadataForVm,
+  patchVmOperation,
+  readLonghornVolume,
+  reapExpiredRollbacks,
+  resolveRootDisk,
+  rollbackMetadata,
+  sanitizeLonghornName,
+  sleep,
+  snapshotsForVolume,
+  timestampSuffix,
+  withVmOperation,
+} from "./longhorn";
+import {
+  attachVolumeForMaintenance,
+  chooseMaintenanceNode,
+  detachMaintenanceVolume,
+  revertSnapshot,
+} from "./longhorn-api";
 import { isManagedVirtualMachine } from "./management";
-import { objectKey, toRestoreSummary, toSnapshotSummary, toVmSummary } from "./status";
+import { objectKey, toVmSummary } from "./status";
 import type {
+  KubeLonghornBackup,
   KubeLonghornVolume,
-  KubeObjectList,
-  KubeStorageVolumeSnapshotContent,
+  KubePersistentVolumeClaim,
   KubeVirtVirtualMachine,
   KubeVirtVirtualMachineInstance,
-  KubeVirtVirtualMachineRestore,
-  KubeVirtVirtualMachineSnapshot,
-  KubeVirtVirtualMachineSnapshotContent,
+  VirtualMachineBackupSummary,
   VirtualMachineDetail,
-  VirtualMachineRestoreSummary,
+  VirtualMachineRollbackSummary,
   VirtualMachineSnapshotSummary,
   VirtualMachineSummary,
   VmAction,
 } from "./types";
 import {
-  hasActiveRestore,
+  createBackupSchema,
+  hasActiveOperation,
   snapshotNameSchema,
   validateActionForVm,
+  validateBackupRestorePreconditions,
   validateRestorePreconditions,
 } from "./validation";
 import { getVmiPhase, isTerminalVmi } from "./vmi";
 
 const KUBEVIRT_GROUP = "kubevirt.io";
 const KUBEVIRT_VERSION = "v1";
-const SNAPSHOT_GROUP = "snapshot.kubevirt.io";
-const SNAPSHOT_VERSION = "v1beta1";
-const STORAGE_SNAPSHOT_GROUP = "snapshot.storage.k8s.io";
-const STORAGE_SNAPSHOT_VERSION = "v1";
-const LONGHORN_GROUP = "longhorn.io";
-const LONGHORN_VERSION = "v1beta2";
-const LONGHORN_NAMESPACE = "longhorn-system";
-const LONGHORN_CSI_DRIVER = "driver.longhorn.io";
 const SUBRESOURCE_GROUP = "subresources.kubevirt.io";
 const RESTORE_TARGET_WAIT_TIMEOUT_MS = 60_000;
 const RESTORE_TARGET_WAIT_INTERVAL_MS = 1_000;
-
-function items<T>(response: unknown): T[] {
-  if (typeof response !== "object" || response === null) {
-    return [];
-  }
-
-  return ((response as KubeObjectList<T>).items ?? []).filter(Boolean);
-}
-
-function isNotFound(error: unknown): boolean {
-  return getErrorStatus(error) === 404;
-}
+const LONGHORN_WAIT_TIMEOUT_MS = 10 * 60_000;
+const LONGHORN_WAIT_INTERVAL_MS = 2_000;
+const PVC_WAIT_TIMEOUT_MS = 90_000;
+const PVC_WAIT_INTERVAL_MS = 1_000;
 
 async function optionalList<T>(request: {
   group: string;
@@ -135,52 +154,6 @@ async function listVirtualMachineInstances(): Promise<KubeVirtVirtualMachineInst
   });
 }
 
-async function listSnapshots(namespace?: string): Promise<KubeVirtVirtualMachineSnapshot[]> {
-  return optionalList<KubeVirtVirtualMachineSnapshot>({
-    group: SNAPSHOT_GROUP,
-    version: SNAPSHOT_VERSION,
-    plural: "virtualmachinesnapshots",
-    namespace,
-  });
-}
-
-async function listSnapshotContents(
-  namespace?: string,
-): Promise<KubeVirtVirtualMachineSnapshotContent[]> {
-  return optionalList<KubeVirtVirtualMachineSnapshotContent>({
-    group: SNAPSHOT_GROUP,
-    version: SNAPSHOT_VERSION,
-    plural: "virtualmachinesnapshotcontents",
-    namespace,
-  });
-}
-
-async function listRestores(namespace?: string): Promise<KubeVirtVirtualMachineRestore[]> {
-  return optionalList<KubeVirtVirtualMachineRestore>({
-    group: SNAPSHOT_GROUP,
-    version: SNAPSHOT_VERSION,
-    plural: "virtualmachinerestores",
-    namespace,
-  });
-}
-
-async function listVolumeSnapshotContents(): Promise<KubeStorageVolumeSnapshotContent[]> {
-  return optionalList<KubeStorageVolumeSnapshotContent>({
-    group: STORAGE_SNAPSHOT_GROUP,
-    version: STORAGE_SNAPSHOT_VERSION,
-    plural: "volumesnapshotcontents",
-  });
-}
-
-async function listLonghornVolumes(): Promise<KubeLonghornVolume[]> {
-  return optionalList<KubeLonghornVolume>({
-    group: LONGHORN_GROUP,
-    version: LONGHORN_VERSION,
-    namespace: LONGHORN_NAMESPACE,
-    plural: "volumes",
-  });
-}
-
 function toVmiMap(vmis: KubeVirtVirtualMachineInstance[]) {
   return new Map(
     vmis
@@ -189,117 +162,8 @@ function toVmiMap(vmis: KubeVirtVirtualMachineInstance[]) {
   );
 }
 
-function volumeSnapshotContentKey(namespace: string | undefined, name: string | undefined) {
-  return namespace && name ? objectKey(namespace, name) : undefined;
-}
-
-function snapshotStorageRestoreBlockers(
-  namespace: string,
-  snapshotContents: KubeVirtVirtualMachineSnapshotContent[],
-  volumeSnapshotContents: KubeStorageVolumeSnapshotContent[],
-  longhornVolumes: KubeLonghornVolume[],
-) {
-  const longhornVolumeNames = new Set<string>();
-  for (const volume of longhornVolumes) {
-    if (volume.metadata?.name) {
-      longhornVolumeNames.add(volume.metadata.name);
-    }
-  }
-
-  if (longhornVolumeNames.size === 0 || volumeSnapshotContents.length === 0) {
-    return new Map<string, string>();
-  }
-
-  const volumeSnapshotContentEntries: Array<readonly [string, KubeStorageVolumeSnapshotContent]> =
-    [];
-  for (const content of volumeSnapshotContents) {
-    const key = volumeSnapshotContentKey(
-      content.spec?.volumeSnapshotRef?.namespace,
-      content.spec?.volumeSnapshotRef?.name,
-    );
-    if (key) {
-      volumeSnapshotContentEntries.push([key, content]);
-    }
-  }
-  const volumeSnapshotContentByRef = new Map(volumeSnapshotContentEntries);
-  const blockers = new Map<string, string>();
-
-  for (const content of snapshotContents) {
-    const snapshotName = content.spec?.virtualMachineSnapshotName;
-    if (!snapshotName || blockers.has(snapshotName)) {
-      continue;
-    }
-
-    for (const backup of content.spec?.volumeBackups ?? []) {
-      const volumeSnapshotContent = volumeSnapshotContentByRef.get(
-        objectKey(namespace, backup.volumeSnapshotName ?? ""),
-      );
-      if (volumeSnapshotContent?.spec?.driver !== LONGHORN_CSI_DRIVER) {
-        continue;
-      }
-
-      const sourceVolume = volumeSnapshotContent.spec.source?.volumeHandle;
-      if (!sourceVolume || longhornVolumeNames.has(sourceVolume)) {
-        continue;
-      }
-
-      const volumeName = backup.volumeName ?? backup.persistentVolumeClaim?.metadata?.name;
-      blockers.set(
-        snapshotName,
-        `The underlying Longhorn volume for ${volumeName ?? "one snapshot disk"} is missing, so this snapshot cannot be restored.`,
-      );
-      break;
-    }
-  }
-
-  return blockers;
-}
-
-function filterRestorableSnapshotSummaries(
-  snapshots: VirtualMachineSnapshotSummary[],
-  blockers: Map<string, string>,
-): VirtualMachineSnapshotSummary[] {
-  return snapshots.filter((snapshot) => !blockers.has(snapshot.name));
-}
-
-function filterSnapshotSummariesForVm(
-  snapshots: KubeVirtVirtualMachineSnapshot[],
-  vmName: string,
-): VirtualMachineSnapshotSummary[] {
-  return snapshots
-    .map(toSnapshotSummary)
-    .filter((snapshot) => snapshot.sourceName === vmName)
-    .sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""));
-}
-
-function filterRestoreSummariesForVm(
-  restores: KubeVirtVirtualMachineRestore[],
-  vmName: string,
-): VirtualMachineRestoreSummary[] {
-  return restores
-    .map(toRestoreSummary)
-    .filter((restore) => restore.targetName === vmName)
-    .sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""));
-}
-
-function buildRestoreName(vmName: string) {
-  const stamp = new Date()
-    .toISOString()
-    .replace(/[-:.TZ]/g, "")
-    .slice(0, 14)
-    .toLowerCase();
-  const suffix = `-restore-${stamp}`;
-  return `${vmName.slice(0, 253 - suffix.length)}${suffix}`;
-}
-
 function encodeSegment(value: string) {
   return encodeURIComponent(value);
-}
-
-function sleep(milliseconds: number) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
 }
 
 async function deleteTerminalVmi(namespace: string, name: string) {
@@ -344,11 +208,9 @@ async function waitForRestoreTargetVmiToDisappear(namespace: string, name: strin
 
     lastPhase = getVmiPhase(vmi);
 
-    if (isTerminalVmi(vmi)) {
-      if (!deletedTerminalVmi) {
-        await deleteTerminalVmi(namespace, name);
-        deletedTerminalVmi = true;
-      }
+    if (isTerminalVmi(vmi) && !deletedTerminalVmi) {
+      await deleteTerminalVmi(namespace, name);
+      deletedTerminalVmi = true;
     }
 
     await sleep(RESTORE_TARGET_WAIT_INTERVAL_MS);
@@ -360,34 +222,232 @@ async function waitForRestoreTargetVmiToDisappear(namespace: string, name: strin
   );
 }
 
+async function waitForPvcDeleted(namespace: string, name: string) {
+  const deadline = Date.now() + PVC_WAIT_TIMEOUT_MS;
+
+  while (Date.now() <= deadline) {
+    try {
+      await getCoreV1Client().readNamespacedPersistentVolumeClaim({ namespace, name });
+    } catch (error) {
+      if (isNotFound(error)) {
+        return;
+      }
+
+      throw error;
+    }
+
+    await sleep(PVC_WAIT_INTERVAL_MS);
+  }
+
+  throw new ApiError(409, `PVC ${namespace}/${name} was not deleted in time.`);
+}
+
+async function waitForPvcBound(namespace: string, name: string) {
+  const deadline = Date.now() + PVC_WAIT_TIMEOUT_MS;
+
+  while (Date.now() <= deadline) {
+    const pvc = (await getCoreV1Client().readNamespacedPersistentVolumeClaim({
+      namespace,
+      name,
+    })) as KubePersistentVolumeClaim;
+
+    if (pvc.status?.phase === "Bound") {
+      return;
+    }
+
+    await sleep(PVC_WAIT_INTERVAL_MS);
+  }
+
+  throw new ApiError(409, `PVC ${namespace}/${name} was not bound in time.`);
+}
+
+async function waitForLonghornVolume(
+  name: string,
+  predicate: (volume: KubeLonghornVolume) => boolean,
+  description: string,
+): Promise<KubeLonghornVolume> {
+  const deadline = Date.now() + LONGHORN_WAIT_TIMEOUT_MS;
+  let lastState: string | undefined;
+
+  while (Date.now() <= deadline) {
+    const volume = await readLonghornVolume(name);
+    lastState = volume.status?.state;
+
+    if (predicate(volume)) {
+      return volume;
+    }
+
+    await sleep(LONGHORN_WAIT_INTERVAL_MS);
+  }
+
+  throw new ApiError(
+    409,
+    `Longhorn volume ${name} did not become ${description}${lastState ? ` (last state: ${lastState})` : ""}.`,
+  );
+}
+
+async function waitForSnapshotReady(snapshotName: string): Promise<VirtualMachineSnapshotSummary> {
+  const deadline = Date.now() + LONGHORN_WAIT_TIMEOUT_MS;
+
+  while (Date.now() <= deadline) {
+    const snapshots = await listLonghornSnapshots();
+    const snapshot = snapshots.find((candidate) => candidate.metadata?.name === snapshotName);
+    if (snapshot?.status?.error) {
+      throw new ApiError(409, snapshot.status.error);
+    }
+
+    if (snapshot?.status?.readyToUse === true) {
+      return (
+        snapshotsForVolume(snapshots, snapshot.spec?.volume ?? "").find(
+          (candidate) => candidate.name === snapshotName,
+        ) ?? {
+          name: snapshotName,
+          namespace: LONGHORN_NAMESPACE,
+          readyToUse: true,
+          phase: "Ready",
+          conditions: [],
+        }
+      );
+    }
+
+    await sleep(LONGHORN_WAIT_INTERVAL_MS);
+  }
+
+  throw new ApiError(409, `Longhorn snapshot ${snapshotName} did not become ready in time.`);
+}
+
+async function waitForBackupComplete(backupName: string): Promise<VirtualMachineBackupSummary> {
+  const deadline = Date.now() + LONGHORN_WAIT_TIMEOUT_MS;
+
+  while (Date.now() <= deadline) {
+    const backups = await listLonghornBackups();
+    const backup = backups.find((candidate) => candidate.metadata?.name === backupName);
+    if (backup?.status?.state === "Error") {
+      throw new ApiError(409, backup.status.error ?? `Longhorn backup ${backupName} failed.`);
+    }
+
+    if (backup?.status?.state === "Completed") {
+      return {
+        name: backup.metadata?.name ?? backupName,
+        namespace: backup.metadata?.namespace ?? LONGHORN_NAMESPACE,
+        volumeName: backup.status.volumeName,
+        createdAt: backup.status.backupCreatedAt ?? backup.metadata?.creationTimestamp,
+        snapshotName: backup.status.snapshotName ?? backup.spec?.snapshotName,
+        readyToUse: true,
+        phase: "Completed",
+        progress: backup.status.progress,
+        backupMode: backup.spec?.backupMode,
+        size: backup.status.size,
+        volumeSize: backup.status.volumeSize,
+        labels: backup.status.labels ?? backup.spec?.labels ?? backup.metadata?.labels,
+      };
+    }
+
+    await sleep(LONGHORN_WAIT_INTERVAL_MS);
+  }
+
+  throw new ApiError(409, `Longhorn backup ${backupName} did not complete in time.`);
+}
+
+async function freezeVmi(namespace: string, name: string): Promise<boolean> {
+  const path = `/apis/${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}/namespaces/${encodeSegment(namespace)}/virtualmachineinstances/${encodeSegment(name)}`;
+
+  try {
+    await requestKubeJson("PUT", `${path}/freeze`, {
+      apiVersion: `${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}`,
+      kind: "FreezeUnfreezeTimeout",
+      unfreezeTimeout: "120s",
+    });
+    return true;
+  } catch (error) {
+    console.warn(`Continuing without guest-agent freeze for ${namespace}/${name}`, error);
+    return false;
+  }
+}
+
+async function unfreezeVmi(namespace: string, name: string) {
+  const path = `/apis/${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}/namespaces/${encodeSegment(namespace)}/virtualmachineinstances/${encodeSegment(name)}`;
+  await requestKubeJson("PUT", `${path}/unfreeze`);
+}
+
+async function startVm(namespace: string, name: string) {
+  const path = `/apis/${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}/namespaces/${encodeSegment(namespace)}/virtualmachines/${encodeSegment(name)}/start`;
+  await requestKubeJson("PUT", path, {
+    apiVersion: `${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}`,
+    kind: "StartOptions",
+  });
+}
+
+async function attachRootVolumeForMaintenance(volumeName: string): Promise<boolean> {
+  const current = await readLonghornVolume(volumeName);
+  if (current.status?.state === "attached") {
+    if (current.status.frontendDisabled === true) {
+      return false;
+    }
+
+    throw new ApiError(
+      409,
+      `Longhorn volume ${volumeName} is still attached with its frontend enabled.`,
+    );
+  }
+
+  if (current.status?.state !== "detached") {
+    await waitForLonghornVolume(
+      volumeName,
+      (volume) => volume.status?.state === "detached",
+      "detached",
+    );
+  }
+
+  const nodeName = await chooseMaintenanceNode();
+  await attachVolumeForMaintenance(volumeName, nodeName);
+  await waitForLonghornVolume(
+    volumeName,
+    (volume) => volume.status?.state === "attached" && volume.status.frontendDisabled === true,
+    "attached in maintenance mode",
+  );
+  return true;
+}
+
+async function detachRootVolumeFromMaintenance(volumeName: string, attachedHere: boolean) {
+  if (!attachedHere) {
+    return;
+  }
+
+  await detachMaintenanceVolume(volumeName);
+  await waitForLonghornVolume(
+    volumeName,
+    (volume) => volume.status?.state === "detached",
+    "detached",
+  );
+}
+
 async function getVirtualMachineSummary(
   namespace: string,
   name: string,
 ): Promise<VirtualMachineSummary> {
-  const [vm, vmi, snapshots, restores] = await Promise.all([
+  const [vm, vmi] = await Promise.all([
     readVirtualMachine(namespace, name),
     readOptionalNamespaced<KubeVirtVirtualMachineInstance>(
       namespace,
       name,
       "virtualmachineinstances",
     ),
-    listSnapshots(namespace),
-    listRestores(namespace),
   ]);
 
-  return toVmSummary(vm, vmi, snapshots, restores);
+  return toVmSummary(vm, vmi);
 }
 
 export async function listVirtualMachines(): Promise<VirtualMachineSummary[]> {
-  const [vmResponse, vmis, snapshots, restores] = await Promise.all([
+  ensureRollbackReaperStarted();
+
+  const [vmResponse, vmis] = await Promise.all([
     getCustomObjectsClient().listCustomObjectForAllNamespaces({
       group: KUBEVIRT_GROUP,
       version: KUBEVIRT_VERSION,
       plural: "virtualmachines",
     }),
     listVirtualMachineInstances(),
-    listSnapshots(),
-    listRestores(),
   ]);
   const vmiMap = toVmiMap(vmis);
 
@@ -396,7 +456,7 @@ export async function listVirtualMachines(): Promise<VirtualMachineSummary[]> {
     .map((vm) => {
       const namespace = vm.metadata?.namespace ?? "default";
       const name = vm.metadata?.name ?? "unknown";
-      return toVmSummary(vm, vmiMap.get(objectKey(namespace, name)), snapshots, restores);
+      return toVmSummary(vm, vmiMap.get(objectKey(namespace, name)));
     })
     .sort(
       (left, right) =>
@@ -408,41 +468,49 @@ export async function getVirtualMachine(
   namespace: string,
   name: string,
 ): Promise<VirtualMachineDetail> {
-  const [vm, vmi, snapshots, restores] = await Promise.all([
+  ensureRollbackReaperStarted();
+
+  const [vm, vmi] = await Promise.all([
     readVirtualMachine(namespace, name),
     readOptionalNamespaced<KubeVirtVirtualMachineInstance>(
       namespace,
       name,
       "virtualmachineinstances",
     ),
-    listSnapshots(namespace),
-    listRestores(namespace),
   ]);
-  const summary = toVmSummary(vm, vmi, snapshots, restores);
-  let snapshotRestoreBlockers = new Map<string, string>();
+  const summary = toVmSummary(vm, vmi);
 
-  if (!hasActiveRestore(summary)) {
-    const [snapshotContents, volumeSnapshotContents, longhornVolumes] = await Promise.all([
-      listSnapshotContents(namespace),
-      listVolumeSnapshotContents(),
-      listLonghornVolumes(),
+  try {
+    const root = await resolveRootDisk(vm);
+    const [snapshots, backups, _backupVolumes, rollbacks] = await Promise.all([
+      listLonghornSnapshots(),
+      listLonghornBackups(),
+      listLonghornBackupVolumes().catch(() => []),
+      listRollbackPvs(namespace, name),
     ]);
-    snapshotRestoreBlockers = snapshotStorageRestoreBlockers(
-      namespace,
-      snapshotContents,
-      volumeSnapshotContents,
-      longhornVolumes,
-    );
-  }
 
-  return {
-    ...summary,
-    snapshots: filterRestorableSnapshotSummaries(
-      filterSnapshotSummariesForVm(snapshots, name),
-      snapshotRestoreBlockers,
-    ),
-    restores: filterRestoreSummariesForVm(restores, name),
-  };
+    return {
+      ...summary,
+      rootDisk: root.summary,
+      snapshots: snapshotsForVolume(snapshots, root.summary.volumeName),
+      backups: backupsForVm(backups, root.summary, namespace, name),
+      rollbacks,
+      restores: [],
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return {
+        ...summary,
+        protectionError: error.message,
+        snapshots: [],
+        backups: [],
+        rollbacks: await listRollbackPvs(namespace, name).catch(() => []),
+        restores: [],
+      };
+    }
+
+    throw error;
+  }
 }
 
 export async function performVirtualMachineAction(
@@ -489,7 +557,25 @@ export async function listVirtualMachineSnapshots(
   namespace: string,
   name: string,
 ): Promise<VirtualMachineSnapshotSummary[]> {
-  return filterSnapshotSummariesForVm(await listSnapshots(namespace), name);
+  const vm = await readVirtualMachine(namespace, name);
+  const root = await resolveRootDisk(vm);
+  return snapshotsForVolume(await listLonghornSnapshots(), root.summary.volumeName);
+}
+
+export async function listVirtualMachineBackups(
+  namespace: string,
+  name: string,
+): Promise<VirtualMachineBackupSummary[]> {
+  const vm = await readVirtualMachine(namespace, name);
+  const root = await resolveRootDisk(vm);
+  return backupsForVm(await listLonghornBackups(), root.summary, namespace, name);
+}
+
+export async function listVirtualMachineRollbacks(
+  namespace: string,
+  name: string,
+): Promise<VirtualMachineRollbackSummary[]> {
+  return listRollbackPvs(namespace, name);
 }
 
 export async function createVirtualMachineSnapshot(
@@ -498,56 +584,117 @@ export async function createVirtualMachineSnapshot(
   snapshotName: string,
 ): Promise<VirtualMachineSnapshotSummary> {
   const name = snapshotNameSchema.parse(snapshotName);
-  const vm = await getVirtualMachineSummary(namespace, vmName);
-  if (hasActiveRestore(vm)) {
-    throw new ApiError(
-      409,
-      "A restore is in progress. Wait until it finishes before creating a snapshot.",
-    );
+  const vm = await readVirtualMachine(namespace, vmName);
+  const summary = toVmSummary(
+    vm,
+    await readOptionalNamespaced<KubeVirtVirtualMachineInstance>(
+      namespace,
+      vmName,
+      "virtualmachineinstances",
+    ),
+  );
+
+  if (hasActiveOperation(summary)) {
+    throw new ApiError(409, "A VM storage operation is already in progress.");
   }
 
-  const response = (await getCustomObjectsClient().createNamespacedCustomObject({
-    group: SNAPSHOT_GROUP,
-    version: SNAPSHOT_VERSION,
-    namespace,
-    plural: "virtualmachinesnapshots",
-    body: {
-      apiVersion: `${SNAPSHOT_GROUP}/${SNAPSHOT_VERSION}`,
-      kind: "VirtualMachineSnapshot",
-      metadata: {
-        name,
-        namespace,
-      },
-      spec: {
-        source: {
-          apiGroup: KUBEVIRT_GROUP,
-          kind: "VirtualMachine",
-          name: vmName,
-        },
-      },
-    },
-  })) as KubeVirtVirtualMachineSnapshot;
+  const root = await resolveRootDisk(vm);
 
-  return toSnapshotSummary(response);
+  return withVmOperation(vm, "snapshot", name, "Creating Longhorn rootdisk snapshot.", async () => {
+    let frozen = false;
+    let attachedHere = false;
+
+    try {
+      if (summary.powerState === "online") {
+        frozen = await freezeVmi(namespace, vmName);
+      } else {
+        attachedHere = await attachRootVolumeForMaintenance(root.summary.volumeName);
+      }
+
+      await createLonghornSnapshot(namespace, vmName, root.summary, name);
+      return waitForSnapshotReady(name);
+    } finally {
+      if (frozen) {
+        await unfreezeVmi(namespace, vmName).catch((error: unknown) => {
+          console.error(`Failed to unfreeze ${namespace}/${vmName}`, error);
+        });
+      }
+
+      await detachRootVolumeFromMaintenance(root.summary.volumeName, attachedHere);
+    }
+  });
 }
 
-export async function listVirtualMachineRestores(
+export async function createVirtualMachineBackup(
   namespace: string,
-  name: string,
-): Promise<VirtualMachineRestoreSummary[]> {
-  return filterRestoreSummariesForVm(await listRestores(namespace), name);
+  vmName: string,
+  backupName: string,
+  backupMode = "incremental",
+): Promise<VirtualMachineBackupSummary> {
+  const parsed = createBackupSchema.parse({ name: backupName, backupMode });
+  const vm = await readVirtualMachine(namespace, vmName);
+  const vmi = await readOptionalNamespaced<KubeVirtVirtualMachineInstance>(
+    namespace,
+    vmName,
+    "virtualmachineinstances",
+  );
+  const summary = toVmSummary(vm, vmi);
+
+  if (hasActiveOperation(summary)) {
+    throw new ApiError(409, "A VM storage operation is already in progress.");
+  }
+
+  const root = await resolveRootDisk(vm);
+
+  return withVmOperation(
+    vm,
+    "backup",
+    parsed.name,
+    "Creating Longhorn rootdisk backup.",
+    async () => {
+      let frozen = false;
+      let attachedHere = false;
+      const snapshotName = sanitizeLonghornName(`${parsed.name}-snapshot-${timestampSuffix()}`);
+
+      try {
+        if (summary.powerState === "online") {
+          frozen = await freezeVmi(namespace, vmName);
+        } else {
+          attachedHere = await attachRootVolumeForMaintenance(root.summary.volumeName);
+        }
+
+        await createLonghornSnapshot(namespace, vmName, root.summary, snapshotName);
+        await waitForSnapshotReady(snapshotName);
+      } finally {
+        if (frozen) {
+          await unfreezeVmi(namespace, vmName).catch((error: unknown) => {
+            console.error(`Failed to unfreeze ${namespace}/${vmName}`, error);
+          });
+        }
+
+        await detachRootVolumeFromMaintenance(root.summary.volumeName, attachedHere);
+      }
+
+      await createLonghornBackup(
+        namespace,
+        vmName,
+        root.summary,
+        parsed.name,
+        snapshotName,
+        parsed.backupMode,
+      );
+      return waitForBackupComplete(parsed.name);
+    },
+  );
 }
 
-export async function createVirtualMachineRestore(
+export async function restoreVirtualMachineSnapshot(
   namespace: string,
   vmName: string,
   snapshotName: string,
-  requestedRestoreName?: string,
-): Promise<VirtualMachineRestoreSummary> {
+): Promise<VirtualMachineDetail> {
   const safeSnapshotName = snapshotNameSchema.parse(snapshotName);
-  const safeRestoreName = snapshotNameSchema.parse(
-    requestedRestoreName ?? buildRestoreName(vmName),
-  );
+  const vm = await readVirtualMachine(namespace, vmName);
   const detail = await getVirtualMachine(namespace, vmName);
   const snapshot = detail.snapshots.find((candidate) => candidate.name === safeSnapshotName);
   const validation = validateRestorePreconditions(detail, snapshot);
@@ -556,30 +703,214 @@ export async function createVirtualMachineRestore(
     throw new ApiError(409, validation.reason ?? "Snapshot restore is not allowed.");
   }
 
-  await waitForRestoreTargetVmiToDisappear(namespace, vmName);
+  const root = await resolveRootDisk(vm);
 
-  const response = (await getCustomObjectsClient().createNamespacedCustomObject({
-    group: SNAPSHOT_GROUP,
-    version: SNAPSHOT_VERSION,
-    namespace,
-    plural: "virtualmachinerestores",
+  await withVmOperation(
+    vm,
+    "restore",
+    safeSnapshotName,
+    "Restoring Longhorn rootdisk snapshot.",
+    async () => {
+      await waitForRestoreTargetVmiToDisappear(namespace, vmName);
+      const attachedHere = await attachRootVolumeForMaintenance(root.summary.volumeName);
+
+      try {
+        await revertSnapshot(root.summary.volumeName, safeSnapshotName);
+      } finally {
+        await detachRootVolumeFromMaintenance(root.summary.volumeName, attachedHere);
+      }
+
+      await startVm(namespace, vmName);
+    },
+  );
+
+  return getVirtualMachine(namespace, vmName);
+}
+
+async function createRestoredLonghornVolume(
+  namespace: string,
+  vmName: string,
+  backup: KubeLonghornBackup,
+  oldVolume: KubeLonghornVolume,
+  root: Awaited<ReturnType<typeof resolveRootDisk>>,
+) {
+  const backupUrl = backup.status?.url;
+  const volumeSize = backup.status?.volumeSize;
+  if (!backupUrl || !volumeSize) {
+    throw new ApiError(
+      409,
+      `Backup ${backup.metadata?.name ?? "unknown"} is missing restore data.`,
+    );
+  }
+
+  const volumeName = sanitizeLonghornName(
+    `${root.summary.volumeName}-restore-${timestampSuffix()}`,
+  );
+  const metadata = metadataForVm(namespace, vmName, root.summary);
+
+  await getCustomObjectsClient().createNamespacedCustomObject({
+    group: LONGHORN_GROUP,
+    version: LONGHORN_VERSION,
+    namespace: LONGHORN_NAMESPACE,
+    plural: "volumes",
     body: {
-      apiVersion: `${SNAPSHOT_GROUP}/${SNAPSHOT_VERSION}`,
-      kind: "VirtualMachineRestore",
+      apiVersion: `${LONGHORN_GROUP}/${LONGHORN_VERSION}`,
+      kind: "Volume",
       metadata: {
-        name: safeRestoreName,
-        namespace,
+        name: volumeName,
+        namespace: LONGHORN_NAMESPACE,
+        labels: metadata.labels,
+        annotations: metadata.annotations,
       },
       spec: {
-        target: {
-          apiGroup: KUBEVIRT_GROUP,
-          kind: "VirtualMachine",
-          name: vmName,
-        },
-        virtualMachineSnapshotName: safeSnapshotName,
+        size: volumeSize,
+        fromBackup: backupUrl,
+        frontend: oldVolume.spec?.frontend || "blockdev",
+        numberOfReplicas: oldVolume.spec?.numberOfReplicas,
+        accessMode: oldVolume.spec?.accessMode,
+        migratable: oldVolume.spec?.migratable,
+        encrypted: oldVolume.spec?.encrypted,
+        diskSelector: oldVolume.spec?.diskSelector,
+        nodeSelector: oldVolume.spec?.nodeSelector,
+        dataEngine: oldVolume.spec?.dataEngine || "v1",
+        backupTargetName: oldVolume.spec?.backupTargetName,
       },
     },
-  })) as KubeVirtVirtualMachineRestore;
+  });
 
-  return toRestoreSummary(response);
+  return waitForLonghornVolume(
+    volumeName,
+    (volume) => volume.status?.state === "detached" && volume.status.restoreRequired === false,
+    "restored and detached",
+  );
+}
+
+export async function restoreVirtualMachineBackup(
+  namespace: string,
+  vmName: string,
+  backupName: string,
+): Promise<VirtualMachineDetail> {
+  const safeBackupName = snapshotNameSchema.parse(backupName);
+  const vm = await readVirtualMachine(namespace, vmName);
+  const detail = await getVirtualMachine(namespace, vmName);
+  const backupSummary = detail.backups.find((candidate) => candidate.name === safeBackupName);
+  const validation = validateBackupRestorePreconditions(detail, backupSummary);
+
+  if (!validation.ok) {
+    throw new ApiError(409, validation.reason ?? "Backup restore is not allowed.");
+  }
+
+  const root = await resolveRootDisk(vm);
+  const backups = await listLonghornBackups();
+  const backup = backups.find((candidate) => candidate.metadata?.name === safeBackupName);
+  if (!backup) {
+    throw new ApiError(404, `Backup ${safeBackupName} was not found.`);
+  }
+
+  await withVmOperation(
+    vm,
+    "restore",
+    safeBackupName,
+    "Restoring Longhorn rootdisk backup.",
+    async () => {
+      await waitForRestoreTargetVmiToDisappear(namespace, vmName);
+      const restoredVolume = await createRestoredLonghornVolume(
+        namespace,
+        vmName,
+        backup,
+        root.volume,
+        root,
+      );
+      const restoredVolumeName = restoredVolume.metadata?.name;
+      if (!restoredVolumeName) {
+        throw new ApiError(500, "Longhorn restored volume has no name.");
+      }
+
+      const rollback = rollbackMetadata(namespace, vmName, root.summary);
+      await getCoreV1Client().patchPersistentVolume({
+        name: root.summary.pvName,
+        body: {
+          metadata: {
+            labels: rollback.labels,
+            annotations: rollback.annotations,
+          },
+          spec: {
+            persistentVolumeReclaimPolicy: "Retain",
+          },
+        },
+      });
+      await getCustomObjectsClient().patchNamespacedCustomObject({
+        group: LONGHORN_GROUP,
+        version: LONGHORN_VERSION,
+        namespace: LONGHORN_NAMESPACE,
+        plural: "volumes",
+        name: root.summary.volumeName,
+        body: {
+          metadata: {
+            labels: rollback.labels,
+            annotations: rollback.annotations,
+          },
+        },
+      });
+
+      await getCoreV1Client().deleteNamespacedPersistentVolumeClaim({
+        namespace,
+        name: root.summary.pvcName,
+        gracePeriodSeconds: 0,
+        propagationPolicy: "Background",
+        body: {
+          apiVersion: "v1",
+          kind: "DeleteOptions",
+          gracePeriodSeconds: 0,
+          propagationPolicy: "Background",
+        },
+      });
+      await waitForPvcDeleted(namespace, root.summary.pvcName);
+
+      const newPvName = sanitizeLonghornName(`${root.summary.pvName}-restore-${timestampSuffix()}`);
+      await getCoreV1Client().createPersistentVolume({
+        body: buildRestoredPv(root.pv, root.pvc, root.summary, newPvName, restoredVolumeName),
+      });
+      await getCoreV1Client().createNamespacedPersistentVolumeClaim({
+        namespace,
+        body: buildRestoredPvc(root.pvc, newPvName),
+      });
+      await waitForPvcBound(namespace, root.summary.pvcName);
+      await startVm(namespace, vmName);
+    },
+  );
+
+  return getVirtualMachine(namespace, vmName);
+}
+
+export async function listVirtualMachineRestores(): Promise<[]> {
+  return [];
+}
+
+export async function createVirtualMachineRestore(
+  namespace: string,
+  vmName: string,
+  snapshotName: string,
+): Promise<VirtualMachineDetail> {
+  return restoreVirtualMachineSnapshot(namespace, vmName, snapshotName);
+}
+
+export async function forceClearVirtualMachineOperation(namespace: string, name: string) {
+  await readVirtualMachine(namespace, name);
+  await patchVmOperation(namespace, name, null);
+  return getVirtualMachine(namespace, name);
+}
+
+export async function discardVirtualMachineRollback(
+  namespace: string,
+  name: string,
+  pvName: string,
+) {
+  await readVirtualMachine(namespace, name);
+  await discardRollback(namespace, name, pvName);
+  return getVirtualMachine(namespace, name);
+}
+
+export async function reapVirtualMachineRollbacks() {
+  await reapExpiredRollbacks();
 }

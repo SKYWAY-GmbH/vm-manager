@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { VirtualMachineSnapshotSummary, VirtualMachineSummary } from "./types";
+import type {
+  VirtualMachineBackupSummary,
+  VirtualMachineSnapshotSummary,
+  VirtualMachineSummary,
+} from "./types";
 import {
   validateActionForVm,
+  validateBackupRestorePreconditions,
   validateRestorePreconditions,
   validateSnapshotName,
 } from "./validation";
@@ -31,6 +36,14 @@ const readySnapshot: VirtualMachineSnapshotSummary = {
   readyToUse: true,
   phase: "Ready",
   conditions: [],
+};
+
+const readyBackup: VirtualMachineBackupSummary = {
+  name: "backup-a",
+  namespace: "longhorn-system",
+  volumeName: "pvc-123",
+  readyToUse: true,
+  phase: "Completed",
 };
 
 describe("snapshot name validation", () => {
@@ -69,7 +82,7 @@ describe("action validation", () => {
 
     expect(validateActionForVm("start", restoringVm)).toMatchObject({
       ok: false,
-      reason: expect.stringContaining("restore is in progress"),
+      reason: expect.stringContaining("storage operation is in progress"),
     });
     expect(validateActionForVm("stop", restoringVm).ok).toBe(false);
     expect(validateActionForVm("reboot", restoringVm).ok).toBe(false);
@@ -100,7 +113,7 @@ describe("restore preconditions", () => {
       ),
     ).toMatchObject({
       ok: false,
-      reason: "A restore is already in progress.",
+      reason: "A VM storage operation is already in progress.",
     });
   });
 
@@ -114,5 +127,17 @@ describe("restore preconditions", () => {
       ok: false,
       reason: "The underlying volume is missing.",
     });
+  });
+
+  it("allows completed backups only when VM is stopped", () => {
+    expect(validateBackupRestorePreconditions(vm("offline"), readyBackup).ok).toBe(true);
+    expect(validateBackupRestorePreconditions(vm("online"), readyBackup).ok).toBe(false);
+    expect(
+      validateBackupRestorePreconditions(vm("offline"), {
+        ...readyBackup,
+        readyToUse: false,
+        phase: "InProgress",
+      }).ok,
+    ).toBe(false);
   });
 });

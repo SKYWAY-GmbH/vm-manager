@@ -21,11 +21,33 @@ export interface CustomObjectsClient {
   listNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
   getNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
   createNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
+  patchNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
   deleteNamespacedCustomObject(request: CustomObjectRequest): Promise<unknown>;
+}
+
+interface CoreV1Request {
+  name?: string;
+  namespace?: string;
+  labelSelector?: string;
+  gracePeriodSeconds?: number;
+  propagationPolicy?: string;
+  body?: unknown;
+}
+
+export interface CoreV1Client {
+  createNamespacedPersistentVolumeClaim(request: CoreV1Request): Promise<unknown>;
+  createPersistentVolume(request: CoreV1Request): Promise<unknown>;
+  deleteNamespacedPersistentVolumeClaim(request: CoreV1Request): Promise<unknown>;
+  deletePersistentVolume(request: CoreV1Request): Promise<unknown>;
+  listPersistentVolume(request?: CoreV1Request): Promise<unknown>;
+  patchPersistentVolume(request: CoreV1Request): Promise<unknown>;
+  readNamespacedPersistentVolumeClaim(request: CoreV1Request): Promise<unknown>;
+  readPersistentVolume(request: CoreV1Request): Promise<unknown>;
 }
 
 let kubeConfig: k8s.KubeConfig | null = null;
 let customObjectsClient: CustomObjectsClient | null = null;
+let coreV1Client: CoreV1Client | null = null;
 
 export function getKubeConfig(): k8s.KubeConfig {
   if (!kubeConfig) {
@@ -50,6 +72,14 @@ export function getCustomObjectsClient(): CustomObjectsClient {
   }
 
   return customObjectsClient;
+}
+
+export function getCoreV1Client(): CoreV1Client {
+  if (!coreV1Client) {
+    coreV1Client = getKubeConfig().makeApiClient(k8s.CoreV1Api) as unknown as CoreV1Client;
+  }
+
+  return coreV1Client;
 }
 
 function joinServerPath(server: string, path: string): URL {
