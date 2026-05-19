@@ -127,23 +127,30 @@ export function VmOverview({
           </span>
         </div>
 
-        <div className="hidden md:block">
-          <Table>
+        <div className="hidden overflow-x-auto md:block">
+          <Table className="min-w-[67rem] table-fixed">
+            <colgroup>
+              <col className="w-[17rem]" />
+              <col className="w-[11rem]" />
+              <col className="w-[11rem]" />
+              <col className="w-[6rem]" />
+              <col className="w-[22rem]" />
+            </colgroup>
             <TableHeader>
               <TableRow>
                 <TableHead>VM</TableHead>
                 <TableHead>Lifecycle</TableHead>
                 <TableHead>Node</TableHead>
                 <TableHead>Activity</TableHead>
-                <TableHead className="w-[24rem] text-right">Actions</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredVms.map((vm) => (
                 <TableRow key={vm.id}>
                   <TableCell>
-                    <div className="flex min-w-52 flex-col">
-                      <Link href={vmHref(vm)} className="font-medium hover:text-primary">
+                    <div className="flex min-w-0 flex-col">
+                      <Link href={vmHref(vm)} className="truncate font-medium hover:text-primary">
                         {vm.name}
                       </Link>
                       <span className="text-muted-foreground text-xs">{vm.namespace}</span>
@@ -176,7 +183,7 @@ export function VmOverview({
                   <p className="text-muted-foreground text-xs">{vm.namespace}</p>
                 </div>
               </div>
-              <VmActionButtons vm={vm} className="justify-start" />
+              <VmActionButtons vm={vm} className="flex-wrap justify-start" />
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div className="space-y-1">
                   <p className="text-muted-foreground text-xs">Lifecycle</p>

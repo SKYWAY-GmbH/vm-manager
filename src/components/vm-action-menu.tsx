@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatTimeUntil } from "@/lib/format";
 import type {
   ManualRuntimeDurationDays,
@@ -70,6 +71,8 @@ const actions: Array<{
     requiresConfirmation: true,
   },
 ];
+
+const iconOnlyActions = new Set<VmAction>(["start", "stop", "reboot"]);
 
 function actionEndpoint(vm: VirtualMachineSummary) {
   return `/api/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}/actions`;
@@ -192,8 +195,8 @@ export function VmActionButtons({
   }
 
   return (
-    <>
-      <div className={cn("flex flex-wrap justify-end gap-1.5", className)}>
+    <TooltipProvider>
+      <div className={cn("flex flex-nowrap justify-end gap-1.5", className)}>
         {showRuntimeReset ? (
           <Button
             size="sm"
@@ -215,36 +218,44 @@ export function VmActionButtons({
           const validation = validateActionForVm(item.action, vm);
           const disabled = !validation.ok || isPending || isResettingRuntime;
           const isActive = activeAction === item.action;
+          const iconOnly = iconOnlyActions.has(item.action);
+          const tooltipText = validation.reason ?? item.description;
 
           return (
-            <Button
-              key={item.action}
-              size="sm"
-              variant={item.destructive ? "destructive" : "outline"}
-              disabled={disabled}
-              title={validation.reason}
-              className="h-8 px-2.5"
-              onClick={() => {
-                if (item.action === "start" && vm.runStrategy === "Manual") {
-                  openRuntimeDialog("start");
-                  return;
-                }
+            <Tooltip key={item.action}>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <Button
+                    size={iconOnly ? "icon" : "sm"}
+                    variant={item.destructive ? "destructive" : "outline"}
+                    disabled={disabled}
+                    aria-label={item.label}
+                    className={iconOnly ? "size-8" : "h-8 px-2.5"}
+                    onClick={() => {
+                      if (item.action === "start" && vm.runStrategy === "Manual") {
+                        openRuntimeDialog("start");
+                        return;
+                      }
 
-                if (item.requiresConfirmation) {
-                  setPendingAction(item);
-                  return;
-                }
+                      if (item.requiresConfirmation) {
+                        setPendingAction(item);
+                        return;
+                      }
 
-                void runAction(item);
-              }}
-            >
-              {isActive ? (
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-              ) : (
-                <Icon className="size-3.5" aria-hidden="true" />
-              )}
-              {item.label}
-            </Button>
+                      void runAction(item);
+                    }}
+                  >
+                    {isActive ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Icon className="size-3.5" aria-hidden="true" />
+                    )}
+                    {iconOnly ? null : item.label}
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{tooltipText}</TooltipContent>
+            </Tooltip>
           );
         })}
       </div>
@@ -363,7 +374,7 @@ export function VmActionButtons({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </TooltipProvider>
   );
 }
 

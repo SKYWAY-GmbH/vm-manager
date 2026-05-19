@@ -9,11 +9,18 @@ The app has no built-in authentication and contains no secrets. Production acces
 - Lists KubeVirt `VirtualMachine` resources across all namespaces.
 - Shows power state, `printableStatus`, readiness, node, IP addresses, run strategy, and active storage operations.
 - Supports start, graceful stop, reboot, and force stop through the KubeVirt subresource API.
+- Enforces Manual VM runtime timers with resettable 1-7 day and 30-day durations.
 - Supports custom-named Longhorn rootdisk snapshots and backups.
 - Shows fast Longhorn snapshots and Longhorn backups separately, including recurring backups.
 - Restores only the VM `rootdisk` Longhorn volume. KubeVirt `persistent-state-for-*` TPM/EFI PVCs are preserved as-is.
 - Keeps the previous rootdisk PV/Longhorn volume as rollback storage for 24 hours after backup restore, with an admin discard action.
 - Hides VMs labelled or annotated with `vm-manager.skyway.tools/managed=false`.
+
+## Screenshots
+
+![VM inventory with runtime timers](./public/screenshots/vm-manager-inventory.png)
+
+![VM detail page with rootdisk protection controls](./public/screenshots/vm-manager-detail.png)
 
 ## Kubernetes Access
 
