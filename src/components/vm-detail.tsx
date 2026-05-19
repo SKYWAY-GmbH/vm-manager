@@ -12,7 +12,11 @@ import {
 } from "@/components/ui/table";
 import { VmActionButtons } from "@/components/vm-action-menu";
 import { formatDateTime, formatElapsedSince, formatIpList, formatReady } from "@/lib/format";
-import type { VirtualMachineDetail, VmOperation } from "@/lib/kubevirt/types";
+import type {
+  VirtualMachineDetail,
+  VirtualMachineRestoreSummary,
+  VmOperation,
+} from "@/lib/kubevirt/types";
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -37,6 +41,10 @@ function operationSubject(operation: VmOperation) {
   }
 
   return operation.name;
+}
+
+function restoreSnapshotLabel(restore: VirtualMachineRestoreSummary) {
+  return restore.snapshotName ?? "Unknown snapshot";
 }
 
 export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
@@ -105,7 +113,6 @@ export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
                 <TableHead>Snapshot</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Created</TableHead>
@@ -114,8 +121,7 @@ export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
             <TableBody>
               {vm.restores.map((restore) => (
                 <TableRow key={restore.name}>
-                  <TableCell className="font-medium">{restore.name}</TableCell>
-                  <TableCell>{restore.snapshotName ?? "Unknown"}</TableCell>
+                  <TableCell className="font-medium">{restoreSnapshotLabel(restore)}</TableCell>
                   <TableCell className="text-muted-foreground text-sm">
                     {restore.message ?? restore.phase}
                   </TableCell>
@@ -131,10 +137,7 @@ export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
           {vm.restores.map((restore) => (
             <div key={restore.name} className="space-y-3 p-4">
               <div className="min-w-0">
-                <p className="break-words font-medium text-sm">{restore.name}</p>
-                <p className="mt-1 text-muted-foreground text-xs">
-                  Snapshot: {restore.snapshotName ?? "Unknown"}
-                </p>
+                <p className="break-words font-medium text-sm">{restoreSnapshotLabel(restore)}</p>
               </div>
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <Field label="Status" value={restore.message ?? restore.phase} />
