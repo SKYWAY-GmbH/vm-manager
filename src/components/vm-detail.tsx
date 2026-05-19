@@ -1,11 +1,15 @@
+"use client";
+
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
-import { AutoRefresh } from "@/components/auto-refresh";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SnapshotControls } from "@/components/snapshot-controls";
 import { Button } from "@/components/ui/button";
 import { VmActionButtons } from "@/components/vm-action-menu";
 import { formatDateTime, formatElapsedSince, formatIpList, formatReady } from "@/lib/format";
 import type { VirtualMachineDetail, VmOperation } from "@/lib/kubevirt/types";
+
+const DETAIL_REFRESH_INTERVAL_MS = 1_000;
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -48,10 +52,100 @@ function operationSubject(operation: VmOperation) {
   return operation.name;
 }
 
-export function VmDetail({ vm }: { vm: VirtualMachineDetail }) {
+function vmEndpoint(vm: Pick<VirtualMachineDetail, "namespace" | "name">) {
+  return `/api/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}`;
+}
+
+async function fetchVmDetail(
+  vm: Pick<VirtualMachineDetail, "namespace" | "name">,
+  signal: AbortSignal,
+) {
+  const response = await fetch(vmEndpoint(vm), {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`VM refresh failed with HTTP ${response.status}.`);
+  }
+
+  const payload = (await response.json()) as { data?: VirtualMachineDetail };
+  if (!payload.data) {
+    throw new Error("VM refresh returned no data.");
+  }
+
+  return payload.data;
+}
+
+export function VmDetail({ vm: initialVm }: { vm: VirtualMachineDetail }) {
+  const [refreshedVm, setRefreshedVm] = useState<VirtualMachineDetail | null>(null);
+  const requestInFlight = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const refreshNowRef = useRef<() => void>(() => {});
+  const vm = refreshedVm ?? initialVm;
+
+  const refreshNow = useCallback(() => {
+    if (requestInFlight.current) {
+      return;
+    }
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    requestInFlight.current = true;
+
+    void fetchVmDetail(initialVm, controller.signal)
+      .then((nextVm) => {
+        setRefreshedVm(nextVm);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+
+        console.warn("VM detail refresh failed", error);
+      })
+      .finally(() => {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
+        requestInFlight.current = false;
+      });
+  }, [initialVm]);
+
+  useEffect(() => {
+    refreshNowRef.current = refreshNow;
+  }, [refreshNow]);
+
+  useEffect(() => {
+    const refreshFromRef = () => {
+      refreshNowRef.current();
+    };
+
+    const interval = window.setInterval(refreshFromRef, DETAIL_REFRESH_INTERVAL_MS);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== "hidden") {
+        refreshFromRef();
+      }
+    };
+
+    refreshFromRef();
+    window.addEventListener("focus", refreshFromRef);
+    window.addEventListener("pageshow", refreshFromRef);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshFromRef);
+      window.removeEventListener("pageshow", refreshFromRef);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      abortRef.current?.abort();
+    };
+  }, []);
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
-      <AutoRefresh />
       <header className="space-y-4 border-border border-b pb-5">
         <Button asChild variant="ghost" size="sm" className="w-fit">
           <Link href="/">

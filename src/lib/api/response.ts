@@ -1,7 +1,16 @@
 import { toApiError } from "@/lib/kubevirt/errors";
 
+function noStoreInit(init?: ResponseInit): ResponseInit {
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Cache-Control")) {
+    headers.set("Cache-Control", "no-store");
+  }
+
+  return { ...init, headers };
+}
+
 export function jsonData<T>(data: T, init?: ResponseInit): Response {
-  return Response.json({ data }, init);
+  return Response.json({ data }, noStoreInit(init));
 }
 
 export function jsonError(error: unknown): Response {
@@ -18,6 +27,6 @@ export function jsonError(error: unknown): Response {
         status: apiError.status,
       },
     },
-    { status: apiError.status },
+    noStoreInit({ status: apiError.status }),
   );
 }
