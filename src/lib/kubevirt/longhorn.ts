@@ -16,6 +16,7 @@ import {
   VM_MANAGER_OPERATION_TYPE_KEY,
 } from "./management";
 import { objectKey } from "./status";
+import { compareTimestampsDesc, firstTimestamp } from "./timestamps";
 import type {
   KubeLonghornBackup,
   KubeLonghornBackupVolume,
@@ -301,7 +302,7 @@ export function toLonghornSnapshotSummary(
     name: snapshot.metadata?.name ?? "unknown",
     namespace: snapshot.metadata?.namespace ?? LONGHORN_NAMESPACE,
     volumeName: snapshot.spec?.volume,
-    createdAt: snapshot.status?.creationTime ?? snapshot.metadata?.creationTimestamp,
+    createdAt: firstTimestamp(snapshot.status?.creationTime, snapshot.metadata?.creationTimestamp),
     readyToUse,
     phase,
     message: snapshot.status?.error,
@@ -319,7 +320,7 @@ export function toLonghornBackupSummary(backup: KubeLonghornBackup): VirtualMach
     name: backup.metadata?.name ?? "unknown",
     namespace: backup.metadata?.namespace ?? LONGHORN_NAMESPACE,
     volumeName: backup.status?.volumeName,
-    createdAt: backup.status?.backupCreatedAt ?? backup.metadata?.creationTimestamp,
+    createdAt: firstTimestamp(backup.status?.backupCreatedAt, backup.metadata?.creationTimestamp),
     snapshotName: backup.status?.snapshotName ?? backup.spec?.snapshotName,
     readyToUse,
     phase: state,
@@ -340,7 +341,7 @@ export function snapshotsForVolume(
     .filter((snapshot) => snapshot.spec?.volume === volumeName)
     .map(toLonghornSnapshotSummary)
     .filter((snapshot) => snapshot.phase !== "Removed")
-    .sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""));
+    .sort((left, right) => compareTimestampsDesc(left.createdAt, right.createdAt));
 }
 
 function metadataMatchesVm(
@@ -374,7 +375,7 @@ export function backupsForVm(
       return labels?.[VM_MANAGER_ROOT_VOLUME_KEY] === root.volumeName;
     })
     .map(toLonghornBackupSummary)
-    .sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""));
+    .sort((left, right) => compareTimestampsDesc(left.createdAt, right.createdAt));
 }
 
 export async function createLonghornSnapshot(
@@ -556,10 +557,10 @@ export async function listRollbackPvs(
       volumeName:
         pv.metadata?.annotations?.[VM_MANAGER_ROLLBACK_VOLUME_KEY] ?? pv.spec?.csi?.volumeHandle,
       pvcName: pv.metadata?.annotations?.[VM_MANAGER_ROOT_PVC_KEY],
-      createdAt: pv.metadata?.creationTimestamp,
+      createdAt: firstTimestamp(pv.metadata?.creationTimestamp),
       expiresAt: pv.metadata?.annotations?.[VM_MANAGER_ROLLBACK_EXPIRES_AT_KEY],
     }))
-    .sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""));
+    .sort((left, right) => compareTimestampsDesc(left.createdAt, right.createdAt));
 }
 
 export function rollbackMetadata(

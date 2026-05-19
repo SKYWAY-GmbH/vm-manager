@@ -47,6 +47,7 @@ import {
 } from "./longhorn-api";
 import { isManagedVirtualMachine } from "./management";
 import { objectKey, toVmSummary } from "./status";
+import { compareTimestampsDesc, firstTimestamp } from "./timestamps";
 import type {
   KubeLonghornBackup,
   KubeLonghornVolume,
@@ -350,7 +351,10 @@ async function waitForBackupComplete(backupName: string): Promise<VirtualMachine
         name: backup.metadata?.name ?? backupName,
         namespace: backup.metadata?.namespace ?? LONGHORN_NAMESPACE,
         volumeName: backup.status.volumeName,
-        createdAt: backup.status.backupCreatedAt ?? backup.metadata?.creationTimestamp,
+        createdAt: firstTimestamp(
+          backup.status.backupCreatedAt,
+          backup.metadata?.creationTimestamp,
+        ),
         snapshotName: backup.status.snapshotName ?? backup.spec?.snapshotName,
         readyToUse: true,
         phase: "Completed",
@@ -779,9 +783,7 @@ async function createRestoredLonghornVolume(
       );
     })
     .sort((left, right) =>
-      (right.metadata?.creationTimestamp ?? "").localeCompare(
-        left.metadata?.creationTimestamp ?? "",
-      ),
+      compareTimestampsDesc(left.metadata?.creationTimestamp, right.metadata?.creationTimestamp),
     )[0];
 
   if (existingVolume?.metadata?.name) {

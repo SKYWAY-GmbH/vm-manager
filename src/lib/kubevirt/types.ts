@@ -1,3 +1,5 @@
+import type { KubeTimestamp } from "./timestamps";
+
 export type VmPowerState = "online" | "offline" | "transitioning" | "unknown";
 
 export type VmAction = "start" | "stop" | "reboot" | "force-stop";
@@ -8,7 +10,7 @@ export interface KubeMetadata {
   name?: string;
   namespace?: string;
   uid?: string;
-  creationTimestamp?: string;
+  creationTimestamp?: KubeTimestamp;
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
 }
@@ -95,7 +97,7 @@ export interface KubeVirtVirtualMachineSnapshot {
   status?: {
     readyToUse?: boolean;
     phase?: string;
-    creationTime?: string;
+    creationTime?: KubeTimestamp;
     error?: {
       message?: string;
       reason?: string;
@@ -140,7 +142,7 @@ export interface KubeVirtVirtualMachineRestore {
     complete?: boolean;
     conditions?: KubeCondition[];
     deletedDataVolumes?: string[];
-    restoreTime?: string;
+    restoreTime?: KubeTimestamp;
     restores?: Array<{
       persistentVolumeClaim?: string;
       volumeName?: string;
@@ -204,7 +206,7 @@ export interface KubeLonghornSnapshot {
   };
   status?: {
     readyToUse?: boolean;
-    creationTime?: string;
+    creationTime?: KubeTimestamp;
     error?: string;
     labels?: Record<string, string>;
     size?: number;
@@ -227,8 +229,8 @@ export interface KubeLonghornBackup {
     error?: string;
     url?: string;
     snapshotName?: string;
-    snapshotCreatedAt?: string;
-    backupCreatedAt?: string;
+    snapshotCreatedAt?: KubeTimestamp;
+    backupCreatedAt?: KubeTimestamp;
     size?: string;
     labels?: Record<string, string>;
     volumeName?: string;

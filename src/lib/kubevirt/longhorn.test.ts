@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  backupsForVm,
   buildRestoredPv,
   buildRestoredPvc,
   restoreVolumeName,
@@ -68,6 +69,37 @@ describe("Longhorn helper functions", () => {
       volumeName: "pvc-root",
       volumeSize: "21474836480",
     });
+  });
+
+  it("normalizes Date timestamps before sorting backups", () => {
+    const backups = backupsForVm(
+      [
+        {
+          metadata: {
+            name: "older",
+            namespace: "longhorn-system",
+            creationTimestamp: new Date("2026-05-19T10:00:00Z"),
+          },
+          status: { state: "Completed", volumeName: "pvc-root" },
+        },
+        {
+          metadata: {
+            name: "newer",
+            namespace: "longhorn-system",
+            creationTimestamp: new Date("2026-05-19T11:00:00Z"),
+          },
+          status: { state: "Completed", volumeName: "pvc-root" },
+        },
+      ],
+      { pvcName: "rootdisk", pvName: "pv-root", volumeName: "pvc-root" },
+      "windows",
+      "vm-01",
+    );
+
+    expect(backups.map((backup) => [backup.name, backup.createdAt])).toEqual([
+      ["newer", "2026-05-19T11:00:00.000Z"],
+      ["older", "2026-05-19T10:00:00.000Z"],
+    ]);
   });
 
   it("builds restored PV claimRef without copying the old claim UID", () => {

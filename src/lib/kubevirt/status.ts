@@ -5,6 +5,7 @@ import {
   VM_MANAGER_OPERATION_STARTED_AT_KEY,
   VM_MANAGER_OPERATION_TYPE_KEY,
 } from "./management";
+import { compareTimestampsDesc, firstTimestamp } from "./timestamps";
 import type {
   KubeCondition,
   KubeVirtVirtualMachine,
@@ -236,8 +237,9 @@ function latestCompletedRestoreForVm(
     .filter((restore) => restoreMatchesVm(restore, vmName))
     .filter((restore) => restore.status?.complete === true)
     .sort((left, right) =>
-      (right.status?.restoreTime ?? right.metadata?.creationTimestamp ?? "").localeCompare(
-        left.status?.restoreTime ?? left.metadata?.creationTimestamp ?? "",
+      compareTimestampsDesc(
+        firstTimestamp(left.status?.restoreTime, left.metadata?.creationTimestamp),
+        firstTimestamp(right.status?.restoreTime, right.metadata?.creationTimestamp),
       ),
     )[0];
 }
@@ -326,7 +328,7 @@ export function toSnapshotSummary(
   return {
     name,
     namespace,
-    createdAt: snapshot.status?.creationTime ?? snapshot.metadata?.creationTimestamp,
+    createdAt: firstTimestamp(snapshot.status?.creationTime, snapshot.metadata?.creationTimestamp),
     sourceName: snapshot.spec?.source?.name,
     readyToUse,
     phase,
@@ -349,7 +351,7 @@ export function toRestoreSummary(
   return {
     name,
     namespace,
-    createdAt: restore.status?.restoreTime ?? restore.metadata?.creationTimestamp,
+    createdAt: firstTimestamp(restore.status?.restoreTime, restore.metadata?.creationTimestamp),
     targetName: restore.spec?.target?.name,
     snapshotName: restore.spec?.virtualMachineSnapshotName,
     complete,
@@ -406,7 +408,7 @@ export function getActiveOperations(
     ...activeSnapshots,
     ...activeRestores,
     ...(recoveryOperation ? [recoveryOperation] : []),
-  ].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""));
+  ].sort((left, right) => compareTimestampsDesc(left.createdAt, right.createdAt));
 }
 
 export function toVmSummary(
@@ -424,7 +426,7 @@ export function toVmSummary(
     uid: vm.metadata?.uid,
     name,
     namespace,
-    createdAt: vm.metadata?.creationTimestamp,
+    createdAt: firstTimestamp(vm.metadata?.creationTimestamp),
     powerState,
     printableStatus: getPrintableStatus(vm, powerState),
     ready: getVmReady(vm),
