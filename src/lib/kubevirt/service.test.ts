@@ -153,7 +153,11 @@ function setupBase({
       }
 
       if (plural === "volumes") {
-        if (name.startsWith("pvc-123-restore")) {
+        if (
+          name.startsWith("pvc-123-restore") ||
+          name === "pvc-123-longhorn-name" ||
+          name === "pvc-existing-restore"
+        ) {
           return Promise.resolve({
             metadata: { name },
             status: { state: "detached", restoreRequired: false },
@@ -285,6 +289,18 @@ describe("Longhorn rootdisk operations", () => {
 
   it("restores backups by creating a volume, retaining the old PV, and binding a new PV first", async () => {
     setupBase();
+    customClient.createNamespacedCustomObject.mockImplementation(
+      ({ plural, body }: { plural: string; body: { metadata?: { name?: string } } }) => {
+        if (plural === "volumes") {
+          return Promise.resolve({
+            metadata: { name: "pvc-123-longhorn-name" },
+            status: { state: "detached", restoreRequired: false },
+          });
+        }
+
+        return Promise.resolve(body);
+      },
+    );
     coreClient.readNamespacedPersistentVolumeClaim.mockImplementation(
       ({ name }: { name: string }) => {
         const deleted = coreClient.deleteNamespacedPersistentVolumeClaim.mock.calls.length > 0;
@@ -322,6 +338,7 @@ describe("Longhorn rootdisk operations", () => {
       namespace: "windows",
       name: "rootdisk-pvc",
     });
+    expect(newPv.spec?.csi?.volumeHandle).toBe("pvc-123-longhorn-name");
 
     expect(patchPersistentVolumeMergePatch.mock.invocationCallOrder[0]).toBeLessThan(
       coreClient.deleteNamespacedPersistentVolumeClaim.mock.invocationCallOrder[0],
@@ -334,5 +351,63 @@ describe("Longhorn rootdisk operations", () => {
       "/apis/subresources.kubevirt.io/v1/namespaces/windows/virtualmachines/vm-01/start",
       expect.objectContaining({ kind: "StartOptions" }),
     );
+  });
+
+  it("reuses an unbound Longhorn restore volume from a previous failed attempt", async () => {
+    setupBase();
+    customClient.listNamespacedCustomObject.mockImplementation(({ plural }: { plural: string }) => {
+      if (plural === "snapshots") {
+        return Promise.resolve({ items: [] });
+      }
+
+      if (plural === "backups") {
+        return Promise.resolve({ items: [backup] });
+      }
+
+      if (plural === "volumes") {
+        return Promise.resolve({
+          items: [
+            {
+              metadata: {
+                name: "pvc-existing-restore",
+                creationTimestamp: "2026-05-19T20:36:55Z",
+                annotations: {
+                  "vm-manager.skyway.tools/vm-namespace": "windows",
+                  "vm-manager.skyway.tools/vm-name": "vm-01",
+                  "vm-manager.skyway.tools/root-volume": "pvc-123",
+                  "vm-manager.skyway.tools/root-pvc": "rootdisk-pvc",
+                },
+              },
+              spec: { fromBackup: backup.status?.url },
+              status: { state: "detached", restoreRequired: false, kubernetesStatus: {} },
+            },
+          ],
+        });
+      }
+
+      return Promise.resolve({ items: [] });
+    });
+    coreClient.readNamespacedPersistentVolumeClaim.mockImplementation(
+      ({ name }: { name: string }) => {
+        const deleted = coreClient.deleteNamespacedPersistentVolumeClaim.mock.calls.length > 0;
+        const recreated = coreClient.createNamespacedPersistentVolumeClaim.mock.calls.length > 0;
+
+        if (name === "rootdisk-pvc" && deleted && !recreated) {
+          return Promise.reject(notFoundError());
+        }
+
+        return Promise.resolve(pvc);
+      },
+    );
+
+    await expect(
+      restoreVirtualMachineBackup("windows", "vm-01", "backup-a"),
+    ).resolves.toMatchObject({ name: "vm-01" });
+
+    expect(customClient.createNamespacedCustomObject).not.toHaveBeenCalledWith(
+      expect.objectContaining({ plural: "volumes" }),
+    );
+    const newPv = coreClient.createPersistentVolume.mock.calls[0]?.[0].body as KubePersistentVolume;
+    expect(newPv.spec?.csi?.volumeHandle).toBe("pvc-existing-restore");
   });
 });

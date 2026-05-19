@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import {
   getCoreV1Client,
   getCustomObjectsClient,
@@ -39,6 +40,7 @@ export const LONGHORN_CSI_DRIVER = "driver.longhorn.io";
 const ROOTDISK_VOLUME_NAME = "rootdisk";
 const BACKEND_STATE_PREFIX = "persistent-state-for-";
 const ROLLBACK_RETENTION_MS = 24 * 60 * 60 * 1000;
+const LONGHORN_VOLUME_NAME_MAX_LENGTH = 40;
 
 export const VM_MANAGER_VM_NAMESPACE_KEY = "vm-manager.skyway.tools/vm-namespace";
 export const VM_MANAGER_VM_NAME_KEY = "vm-manager.skyway.tools/vm-name";
@@ -82,6 +84,24 @@ export function sanitizeLonghornName(input: string, maxLength = 253): string {
 
   const trimmed = (sanitized || "vm-manager").slice(0, maxLength).replace(/[^a-z0-9]+$/, "");
   return trimmed || "vm-manager";
+}
+
+export function shortenLonghornName(input: string, maxLength = LONGHORN_VOLUME_NAME_MAX_LENGTH) {
+  const sanitized = sanitizeLonghornName(input);
+  if (sanitized.length <= maxLength) {
+    return sanitized;
+  }
+
+  const hash = createHash("sha256").update(sanitized).digest("hex").slice(0, 8);
+  const prefix = sanitized
+    .slice(0, Math.max(1, maxLength - hash.length - 1))
+    .replace(/[^a-z0-9]+$/, "");
+
+  return `${prefix || "vm"}-${hash}`;
+}
+
+export function restoreVolumeName(rootVolumeName: string, suffix = timestampSuffix()) {
+  return shortenLonghornName(`${rootVolumeName}-restore-${suffix}`);
 }
 
 export function timestampSuffix() {
@@ -251,6 +271,16 @@ export async function listLonghornBackupVolumes(): Promise<KubeLonghornBackupVol
     plural: "backupvolumes",
   });
   return items<KubeLonghornBackupVolume>(response);
+}
+
+export async function listLonghornVolumes(): Promise<KubeLonghornVolume[]> {
+  const response = await getCustomObjectsClient().listNamespacedCustomObject({
+    group: LONGHORN_GROUP,
+    version: LONGHORN_VERSION,
+    namespace: LONGHORN_NAMESPACE,
+    plural: "volumes",
+  });
+  return items<KubeLonghornVolume>(response);
 }
 
 export function toLonghornSnapshotSummary(

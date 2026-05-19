@@ -4,7 +4,9 @@ vi.mock("server-only", () => ({}));
 
 import {
   buildRestoredPv,
+  restoreVolumeName,
   sanitizeLonghornName,
+  shortenLonghornName,
   snapshotsForVolume,
   toLonghornBackupSummary,
 } from "./longhorn";
@@ -15,6 +17,15 @@ describe("Longhorn helper functions", () => {
     expect(sanitizeLonghornName("VM_01 Backup!!")).toBe("vm-01-backup");
     expect(sanitizeLonghornName("---", 20)).toBe("vm-manager");
     expect(sanitizeLonghornName("a".repeat(300))).toHaveLength(253);
+  });
+
+  it("shortens restore volume names to Longhorn's 40 character limit", () => {
+    expect(shortenLonghornName("VM_01 Backup!!", 40)).toBe("vm-01-backup");
+
+    const name = restoreVolumeName("pvc-4598cc85-fa99-4d4b-b455-425cd8882219", "20260519203655");
+    expect(name).toHaveLength(40);
+    expect(name).toMatch(/^pvc-4598cc85-fa99-4d4b-b455-[a-z0-9-]+-[a-f0-9]{8}$/);
+    expect(name).not.toBe("pvc-4598cc85-fa99-4d4b-b455-425cd8882219");
   });
 
   it("filters snapshots by exact Longhorn volume name", () => {

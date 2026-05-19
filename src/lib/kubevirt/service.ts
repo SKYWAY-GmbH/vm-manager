@@ -24,12 +24,14 @@ import {
   listLonghornBackups,
   listLonghornBackupVolumes,
   listLonghornSnapshots,
+  listLonghornVolumes,
   listRollbackPvs,
   metadataForVm,
   patchVmOperation,
   readLonghornVolume,
   reapExpiredRollbacks,
   resolveRootDisk,
+  restoreVolumeName,
   rollbackMetadata,
   sanitizeLonghornName,
   sleep,
@@ -276,7 +278,18 @@ async function waitForLonghornVolume(
   let lastState: string | undefined;
 
   while (Date.now() <= deadline) {
-    const volume = await readLonghornVolume(name);
+    let volume: KubeLonghornVolume;
+    try {
+      volume = await readLonghornVolume(name);
+    } catch (error) {
+      if (isNotFound(error)) {
+        await sleep(LONGHORN_WAIT_INTERVAL_MS);
+        continue;
+      }
+
+      throw error;
+    }
+
     lastState = volume.status?.state;
 
     if (predicate(volume)) {
@@ -749,12 +762,37 @@ async function createRestoredLonghornVolume(
     );
   }
 
-  const volumeName = sanitizeLonghornName(
-    `${root.summary.volumeName}-restore-${timestampSuffix()}`,
-  );
+  const requestedVolumeName = restoreVolumeName(root.summary.volumeName);
   const metadata = metadataForVm(namespace, vmName, root.summary);
+  const existingVolume = (await listLonghornVolumes())
+    .filter((volume) => {
+      const annotations = volume.metadata?.annotations ?? {};
+      const matchesMetadata = Object.entries(metadata.annotations).every(
+        ([key, value]) => annotations[key] === value,
+      );
 
-  await getCustomObjectsClient().createNamespacedCustomObject({
+      return (
+        matchesMetadata &&
+        volume.spec?.fromBackup === backupUrl &&
+        !volume.status?.kubernetesStatus?.pvName &&
+        Boolean(volume.metadata?.name)
+      );
+    })
+    .sort((left, right) =>
+      (right.metadata?.creationTimestamp ?? "").localeCompare(
+        left.metadata?.creationTimestamp ?? "",
+      ),
+    )[0];
+
+  if (existingVolume?.metadata?.name) {
+    return waitForLonghornVolume(
+      existingVolume.metadata.name,
+      (volume) => volume.status?.state === "detached" && volume.status.restoreRequired === false,
+      "restored and detached",
+    );
+  }
+
+  const createdVolume = (await getCustomObjectsClient().createNamespacedCustomObject({
     group: LONGHORN_GROUP,
     version: LONGHORN_VERSION,
     namespace: LONGHORN_NAMESPACE,
@@ -763,7 +801,7 @@ async function createRestoredLonghornVolume(
       apiVersion: `${LONGHORN_GROUP}/${LONGHORN_VERSION}`,
       kind: "Volume",
       metadata: {
-        name: volumeName,
+        name: requestedVolumeName,
         namespace: LONGHORN_NAMESPACE,
         labels: metadata.labels,
         annotations: metadata.annotations,
@@ -782,7 +820,8 @@ async function createRestoredLonghornVolume(
         backupTargetName: oldVolume.spec?.backupTargetName,
       },
     },
-  });
+  })) as KubeLonghornVolume;
+  const volumeName = createdVolume.metadata?.name ?? requestedVolumeName;
 
   return waitForLonghornVolume(
     volumeName,

@@ -169,6 +169,7 @@ export interface KubeLonghornVolume {
     size?: string | number;
     frontend?: string;
     disableFrontend?: boolean;
+    fromBackup?: string;
     numberOfReplicas?: number;
     accessMode?: string;
     migratable?: boolean;
