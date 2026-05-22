@@ -25,6 +25,8 @@ function vm(
     ready: null,
     ipAddresses: [],
     runStrategy: "Manual",
+    resources: { current: {}, desired: {}, pendingRestart: false },
+    rdp: { status: powerState === "online" ? "unavailable" : "offline", sessions: [] },
     conditions: [],
     activeOperations,
   };

@@ -14,6 +14,7 @@ import {
   formatTimeUntil,
 } from "@/lib/format";
 import type { VirtualMachineDetail, VmOperation } from "@/lib/kubevirt/types";
+import { cn } from "@/lib/utils";
 
 const DETAIL_REFRESH_INTERVAL_MS = 1_000;
 
@@ -24,6 +25,81 @@ function Field({ label, value }: { label: string; value: string }) {
       <p className="truncate text-sm">{value}</p>
     </div>
   );
+}
+
+function ResourceValue({
+  label,
+  value,
+  muted = false,
+}: {
+  label: string;
+  value?: string;
+  muted?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="text-muted-foreground text-xs">{label}</p>
+      <p className={cn("truncate text-sm", muted ? "text-muted-foreground" : "text-foreground")}>
+        {value ?? "Unset"}
+      </p>
+    </div>
+  );
+}
+
+function VmResourceSettings({ vm }: { vm: VirtualMachineDetail }) {
+  const { current, desired, pendingRestart } = vm.resources;
+
+  return (
+    <div className="border-border border-t px-4 py-3">
+      <div className="grid gap-4 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-start">
+        <div>
+          <h3 className="font-medium text-sm">VM parameters</h3>
+          <p className="mt-1 text-muted-foreground text-xs">
+            {pendingRestart ? "Pending reboot values available." : "Effective settings."}
+          </p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <ResourceValue label="CPU" value={current.cpu} />
+          <ResourceValue label="RAM" value={current.memory} />
+          <ResourceValue label="Disk" value={current.disk} />
+        </div>
+      </div>
+
+      {pendingRestart ? (
+        <div className="mt-3 grid gap-4 rounded-md border border-amber-300/25 bg-amber-300/8 px-3 py-2 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-start">
+          <div>
+            <p className="font-medium text-amber-100 text-xs">After reboot</p>
+            <p className="mt-1 text-amber-100/70 text-xs">Template settings.</p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <ResourceValue label="CPU" value={desired.cpu} muted />
+            <ResourceValue label="RAM" value={desired.memory} muted />
+            <ResourceValue label="Disk" value={desired.disk} muted />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function sessionName({ domain, userName }: { domain?: string; userName: string }) {
+  return domain ? `${domain}\\${userName}` : userName;
+}
+
+function rdpSignalText(vm: VirtualMachineDetail) {
+  if (vm.rdp.status === "offline") {
+    return "Offline";
+  }
+
+  if (vm.rdp.status === "unavailable") {
+    return "Unavailable";
+  }
+
+  if (vm.rdp.status === "inactive") {
+    return "No active session";
+  }
+
+  return vm.rdp.sessions.map(sessionName).join(", ");
 }
 
 function operationTitle(operation: VmOperation) {
@@ -178,6 +254,10 @@ export function VmDetail({ vm: initialVm }: { vm: VirtualMachineDetail }) {
           <Field label="Node" value={vm.nodeName ?? "Unscheduled"} />
           <Field label="Lifecycle mode" value={vm.runStrategy} />
           <Field label="IP addresses" value={formatIpList(vm.ipAddresses)} />
+          <Field label="RDP signal" value={rdpSignalText(vm)} />
+          {vm.rdp.status === "active" && vm.rdp.sessions[0]?.loginTime ? (
+            <Field label="Session since" value={formatDateTime(vm.rdp.sessions[0].loginTime)} />
+          ) : null}
           {vm.runningSince ? (
             <Field label="Running for" value={formatElapsedSince(vm.runningSince)} />
           ) : null}
@@ -194,6 +274,7 @@ export function VmDetail({ vm: initialVm }: { vm: VirtualMachineDetail }) {
           <Field label="Created" value={formatDateTime(vm.createdAt)} />
           <Field label="UID" value={vm.uid ?? "Unavailable"} />
         </div>
+        <VmResourceSettings vm={vm} />
         {vm.activeOperations.length > 0 ? (
           <div className="border-border border-t">
             {vm.activeOperations.map((operation) => (

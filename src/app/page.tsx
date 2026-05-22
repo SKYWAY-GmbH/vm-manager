@@ -1,8 +1,8 @@
 import { AppShell } from "@/components/app-shell";
 import { VmOverview } from "@/components/vm-overview";
 import { toApiError } from "@/lib/kubevirt/errors";
-import { listVirtualMachines } from "@/lib/kubevirt/service";
-import type { VirtualMachineSummary } from "@/lib/kubevirt/types";
+import { listClusterNodeMetrics, listVirtualMachines } from "@/lib/kubevirt/service";
+import type { ClusterNodeLoad, VirtualMachineSummary } from "@/lib/kubevirt/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,7 +20,9 @@ function formatLoadError(message: string) {
 
 export default async function Home() {
   let vms: VirtualMachineSummary[] = [];
+  let nodes: ClusterNodeLoad[] = [];
   let error: string | undefined;
+  let metricsError: string | undefined;
 
   try {
     vms = await listVirtualMachines();
@@ -29,9 +31,18 @@ export default async function Home() {
     error = formatLoadError(apiError.message);
   }
 
+  if (!error) {
+    try {
+      nodes = await listClusterNodeMetrics();
+    } catch (caught) {
+      const apiError = toApiError(caught);
+      metricsError = formatLoadError(apiError.message);
+    }
+  }
+
   return (
     <AppShell>
-      <VmOverview initialVms={vms} error={error} />
+      <VmOverview initialVms={vms} nodes={nodes} error={error} metricsError={metricsError} />
     </AppShell>
   );
 }

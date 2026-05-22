@@ -54,12 +54,16 @@ import {
   manualRuntimePatchBody,
 } from "./manual-runtime";
 import { ensureManualRuntimeReconcilerStarted } from "./manual-runtime-reconciler";
-import { objectKey, toVmSummary } from "./status";
+import { objectKey, toClusterNodeLoad, toVmSummary } from "./status";
 import { compareTimestampsDesc, firstTimestamp } from "./timestamps";
 import type {
+  ClusterNodeLoad,
   KubeLonghornBackup,
   KubeLonghornVolume,
+  KubeNode,
+  KubeNodeMetrics,
   KubePersistentVolumeClaim,
+  KubeVirtGuestUserList,
   KubeVirtVirtualMachine,
   KubeVirtVirtualMachineInstance,
   ManualRuntimeDurationDays,
@@ -457,6 +461,28 @@ async function startVm(namespace: string, name: string) {
   });
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Guest session status is unavailable.";
+}
+
+async function readGuestUsers(
+  namespace: string,
+  name: string,
+  powerState: VirtualMachineSummary["powerState"],
+): Promise<{ users?: KubeVirtGuestUserList["items"]; error?: string }> {
+  if (powerState !== "online") {
+    return { users: [] };
+  }
+
+  try {
+    const path = `/apis/${SUBRESOURCE_GROUP}/${KUBEVIRT_VERSION}/namespaces/${encodeSegment(namespace)}/virtualmachineinstances/${encodeSegment(name)}/userlist`;
+    const response = (await requestKubeJson("GET", path)) as KubeVirtGuestUserList;
+    return { users: response.items ?? [] };
+  } catch (error) {
+    return { error: errorMessage(error) };
+  }
+}
+
 async function attachRootVolumeForMaintenance(volumeName: string): Promise<boolean> {
   const current = await readLonghornVolume(volumeName);
   if (current.status?.state === "attached") {
@@ -544,6 +570,27 @@ export async function listVirtualMachines(): Promise<VirtualMachineSummary[]> {
     );
 }
 
+export async function listClusterNodeMetrics(): Promise<ClusterNodeLoad[]> {
+  const [nodeResponse, nodeMetrics] = await Promise.all([
+    getCoreV1Client().listNode({}),
+    optionalList<KubeNodeMetrics>({
+      group: "metrics.k8s.io",
+      version: "v1beta1",
+      plural: "nodes",
+    }).catch(() => []),
+  ]);
+  const metricsMap = new Map(
+    nodeMetrics
+      .filter((metric) => metric.metadata?.name)
+      .map((metric) => [metric.metadata?.name ?? "", metric]),
+  );
+
+  return items<KubeNode>(nodeResponse)
+    .map((node) => toClusterNodeLoad(node, metricsMap.get(node.metadata?.name ?? "")))
+    .filter((node): node is ClusterNodeLoad => Boolean(node))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
 export async function getVirtualMachine(
   namespace: string,
   name: string,
@@ -559,19 +606,30 @@ export async function getVirtualMachine(
       "virtualmachineinstances",
     ),
   ]);
-  const summary = toVmSummary(vm, vmi);
+  const baseSummary = toVmSummary(vm, vmi);
+  const guestUsersPromise = readGuestUsers(namespace, name, baseSummary.powerState);
 
   try {
     const root = await resolveRootDisk(vm);
-    const [snapshots, backups, _backupVolumes, rollbacks] = await Promise.all([
+    const [snapshots, backups, _backupVolumes, rollbacks, guestUsers] = await Promise.all([
       listLonghornSnapshots(),
       listLonghornBackups(),
       listLonghornBackupVolumes().catch(() => []),
       listRollbackPvs(namespace, name),
+      guestUsersPromise,
     ]);
 
     return {
-      ...summary,
+      ...toVmSummary(
+        vm,
+        vmi,
+        [],
+        [],
+        root.summary.currentSize ?? root.summary.size,
+        root.summary.desiredSize ?? root.summary.size,
+        guestUsers.users,
+        guestUsers.error,
+      ),
       rootDisk: root.summary,
       snapshots: snapshotsForVolume(snapshots, root.summary.volumeName),
       backups: backupsForVm(backups, root.summary, namespace, name),
@@ -580,8 +638,9 @@ export async function getVirtualMachine(
     };
   } catch (error) {
     if (error instanceof ApiError) {
+      const guestUsers = await guestUsersPromise;
       return {
-        ...summary,
+        ...toVmSummary(vm, vmi, [], [], undefined, undefined, guestUsers.users, guestUsers.error),
         protectionError: error.message,
         snapshots: [],
         backups: [],

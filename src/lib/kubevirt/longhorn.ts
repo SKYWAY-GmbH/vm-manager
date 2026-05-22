@@ -239,6 +239,8 @@ export async function resolveRootDisk(vm: KubeVirtVirtualMachine): Promise<Resol
       volumeName,
       storageClassName: pvc.spec?.storageClassName ?? pv.spec?.storageClassName,
       size: pvc.spec?.resources?.requests?.storage ?? pv.spec?.capacity?.storage,
+      currentSize: pv.spec?.capacity?.storage,
+      desiredSize: pvc.spec?.resources?.requests?.storage,
       volumeMode: pvc.spec?.volumeMode ?? pv.spec?.volumeMode,
     },
   };

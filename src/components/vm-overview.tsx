@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Search } from "lucide-react";
+import { ArrowRight, Cpu, HardDrive, MemoryStick, Search, Server } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { AutoRefresh } from "@/components/auto-refresh";
@@ -16,8 +16,15 @@ import {
 } from "@/components/ui/table";
 import { VmActionButtons } from "@/components/vm-action-menu";
 import { formatElapsedSince, formatReady } from "@/lib/format";
-import type { VirtualMachineSummary, VmPowerState } from "@/lib/kubevirt/types";
+import type {
+  ClusterNodeLoad,
+  ClusterResourceLoad,
+  VirtualMachineSummary,
+  VmPowerState,
+} from "@/lib/kubevirt/types";
 import { cn } from "@/lib/utils";
+
+const OVERVIEW_REFRESH_INTERVAL_MS = 5_000;
 
 function vmHref(vm: VirtualMachineSummary) {
   return `/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}`;
@@ -67,6 +74,101 @@ function VmLifecycleText({ vm }: { vm: VirtualMachineSummary }) {
   );
 }
 
+function percentText(percent: number | undefined) {
+  return typeof percent === "number" ? `${Math.round(percent)}%` : "--";
+}
+
+function resourceText(resource: ClusterResourceLoad) {
+  if (resource.used && resource.capacity) {
+    return `${resource.used} / ${resource.capacity}`;
+  }
+
+  return resource.capacity ?? resource.used ?? "Unavailable";
+}
+
+function MetricBar({ percent }: { percent: number | undefined }) {
+  return (
+    <div className="h-1 w-full min-w-10 overflow-hidden rounded-sm bg-muted">
+      <div
+        className="h-full rounded-sm bg-primary"
+        style={{ width: `${Math.max(0, Math.min(100, percent ?? 0))}%` }}
+      />
+    </div>
+  );
+}
+
+function NodeMetric({
+  icon: Icon,
+  label,
+  resource,
+}: {
+  icon: typeof Cpu;
+  label: string;
+  resource: ClusterResourceLoad;
+}) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <div className="flex items-center gap-1.5">
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="sr-only">{label}</span>
+        <span className="font-medium text-xs tabular-nums">{percentText(resource.percent)}</span>
+      </div>
+      <MetricBar percent={resource.percent} />
+      <p className="truncate text-[0.68rem] text-muted-foreground tabular-nums">
+        {resourceText(resource)}
+      </p>
+    </div>
+  );
+}
+
+function ClusterLoadStrip({ nodes, error }: { nodes: ClusterNodeLoad[]; error?: string }) {
+  if (nodes.length === 0 && !error) {
+    return null;
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-card">
+      <div className="flex h-10 items-center justify-between border-border border-b px-4">
+        <h2 className="font-medium text-sm">Cluster load</h2>
+        <span className="text-muted-foreground text-xs">5s refresh</span>
+      </div>
+      {error ? (
+        <div className="border-border border-b px-4 py-2 text-amber-200 text-xs">{error}</div>
+      ) : null}
+      <div className="flex gap-0 overflow-x-auto">
+        {nodes.map((node) => (
+          <div
+            key={node.name}
+            className="grid min-w-[16rem] grid-cols-[1.75rem_minmax(0,1fr)] gap-3 border-border border-r px-3 py-2 last:border-r-0"
+          >
+            <div className="mt-0.5 flex size-7 items-center justify-center rounded-md border border-border bg-background">
+              <Server className="size-4 text-muted-foreground" aria-hidden="true" />
+            </div>
+            <div className="min-w-0 space-y-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="truncate font-medium text-xs">{node.name}</p>
+                <span
+                  className={cn(
+                    "shrink-0 text-[0.68rem]",
+                    node.ready === false ? "text-destructive" : "text-muted-foreground",
+                  )}
+                >
+                  {node.ready === false ? "Not ready" : node.roles.join(", ")}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <NodeMetric icon={Cpu} label="CPU" resource={node.cpu} />
+                <NodeMetric icon={MemoryStick} label="Memory" resource={node.memory} />
+                <NodeMetric icon={HardDrive} label="Storage" resource={node.storage} />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function matchesVm(vm: VirtualMachineSummary, query: string) {
   const haystack = [vm.name, vm.namespace, vm.printableStatus, vm.nodeName, activityLabel(vm)]
     .filter(Boolean)
@@ -78,10 +180,14 @@ function matchesVm(vm: VirtualMachineSummary, query: string) {
 
 export function VmOverview({
   initialVms,
+  nodes,
   error,
+  metricsError,
 }: {
   initialVms: VirtualMachineSummary[];
+  nodes: ClusterNodeLoad[];
   error?: string;
+  metricsError?: string;
 }) {
   const [query, setQuery] = useState("");
   const filteredVms = useMemo(
@@ -91,7 +197,7 @@ export function VmOverview({
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
-      <AutoRefresh />
+      <AutoRefresh intervalMs={OVERVIEW_REFRESH_INTERVAL_MS} />
       <header className="flex flex-col gap-4 border-border border-b pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div className="space-y-1">
           <h1 className="font-semibold text-2xl tracking-normal">Virtual machines</h1>
@@ -118,6 +224,8 @@ export function VmOverview({
           {error}
         </div>
       ) : null}
+
+      {!error ? <ClusterLoadStrip nodes={nodes} error={metricsError} /> : null}
 
       <section className="rounded-lg border border-border bg-card">
         <div className="flex h-12 items-center justify-between border-border border-b px-4">
@@ -217,7 +325,7 @@ export function VmOverview({
         ) : null}
       </section>
 
-      <p className="text-muted-foreground text-xs">Inventory refreshes every second.</p>
+      <p className="text-muted-foreground text-xs">Dashboard refreshes every 5 seconds.</p>
     </div>
   );
 }

@@ -46,6 +46,7 @@ export interface CoreV1Client {
   createPersistentVolume(request: CoreV1Request): Promise<unknown>;
   deleteNamespacedPersistentVolumeClaim(request: CoreV1Request): Promise<unknown>;
   deletePersistentVolume(request: CoreV1Request): Promise<unknown>;
+  listNode(request?: CoreV1Request): Promise<unknown>;
   listPersistentVolume(request?: CoreV1Request): Promise<unknown>;
   patchPersistentVolume(request: CoreV1Request): Promise<unknown>;
   readNamespacedPersistentVolumeClaim(request: CoreV1Request): Promise<unknown>;
@@ -126,7 +127,7 @@ function getErrorMessage(body: unknown, fallback: string): string {
 }
 
 export async function requestKubeJson(
-  method: "POST" | "PUT" | "PATCH",
+  method: "GET" | "POST" | "PUT" | "PATCH",
   path: string,
   body?: unknown,
   requestOptions: { contentType?: string } = {},

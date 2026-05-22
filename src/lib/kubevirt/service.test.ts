@@ -19,6 +19,7 @@ const coreClient = vi.hoisted(() => ({
   createPersistentVolume: vi.fn(),
   deleteNamespacedPersistentVolumeClaim: vi.fn(),
   deletePersistentVolume: vi.fn(),
+  listNode: vi.fn(),
   listPersistentVolume: vi.fn(),
   patchPersistentVolume: vi.fn(),
   readNamespacedPersistentVolumeClaim: vi.fn(),

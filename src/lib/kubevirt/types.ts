@@ -39,9 +39,12 @@ export interface KubeVirtVirtualMachine {
     template?: {
       spec?: {
         domain?: {
+          cpu?: KubeVirtCpuSpec;
           devices?: {
             interfaces?: Array<{ name?: string; masquerade?: unknown; bridge?: unknown }>;
           };
+          memory?: KubeVirtMemorySpec;
+          resources?: KubeResourceRequirements;
         };
         volumes?: Array<{
           name?: string;
@@ -67,8 +70,39 @@ export interface KubeVirtVirtualMachine {
   };
 }
 
+export interface KubeResourceRequirements {
+  requests?: Record<string, string | number>;
+  limits?: Record<string, string | number>;
+}
+
+export interface KubeVirtCpuSpec {
+  cores?: number;
+  sockets?: number;
+  threads?: number;
+  model?: string;
+  dedicatedCpuPlacement?: boolean;
+  isolateEmulatorThread?: boolean;
+}
+
+export interface KubeVirtMemorySpec {
+  guest?: string | number;
+  maxGuest?: string | number;
+  hugepages?: {
+    pageSize?: string;
+  };
+}
+
+export interface KubeVirtDomainSpec {
+  cpu?: KubeVirtCpuSpec;
+  memory?: KubeVirtMemorySpec;
+  resources?: KubeResourceRequirements;
+}
+
 export interface KubeVirtVirtualMachineInstance {
   metadata?: KubeMetadata;
+  spec?: {
+    domain?: KubeVirtDomainSpec;
+  };
   status?: {
     nodeName?: string;
     phase?: string;
@@ -85,6 +119,32 @@ export interface KubeVirtVirtualMachineInstance {
       ipAddresses?: string[];
     }>;
   };
+}
+
+export interface KubeNode {
+  metadata?: KubeMetadata;
+  status?: {
+    allocatable?: Record<string, string>;
+    capacity?: Record<string, string>;
+    conditions?: KubeCondition[];
+  };
+}
+
+export interface KubeNodeMetrics {
+  metadata?: KubeMetadata;
+  timestamp?: string;
+  window?: string;
+  usage?: Record<string, string>;
+}
+
+export interface KubeVirtGuestUser {
+  domain?: string;
+  loginTime?: number;
+  userName?: string;
+}
+
+export interface KubeVirtGuestUserList {
+  items?: KubeVirtGuestUser[];
 }
 
 export interface KubeVirtVirtualMachineSnapshot {
@@ -330,6 +390,46 @@ export interface ManualRuntimeSummary {
   stopRequestedAt?: string;
 }
 
+export interface VirtualMachineResourceProfile {
+  cpu?: string;
+  memory?: string;
+  disk?: string;
+}
+
+export interface VirtualMachineResourceSettings {
+  current: VirtualMachineResourceProfile;
+  desired: VirtualMachineResourceProfile;
+  pendingRestart: boolean;
+}
+
+export interface VirtualMachineGuestSession {
+  domain?: string;
+  loginTime?: string;
+  userName: string;
+}
+
+export interface VirtualMachineRdpSignal {
+  status: "active" | "inactive" | "offline" | "unavailable";
+  sessions: VirtualMachineGuestSession[];
+  message?: string;
+}
+
+export interface ClusterResourceLoad {
+  used?: string;
+  capacity?: string;
+  percent?: number;
+}
+
+export interface ClusterNodeLoad {
+  name: string;
+  roles: string[];
+  ready: boolean | null;
+  cpu: ClusterResourceLoad;
+  memory: ClusterResourceLoad;
+  storage: ClusterResourceLoad;
+  updatedAt?: string;
+}
+
 export interface VirtualMachineSummary {
   id: string;
   uid?: string;
@@ -344,6 +444,8 @@ export interface VirtualMachineSummary {
   runStrategy: string;
   runningSince?: string;
   manualRuntime?: ManualRuntimeSummary;
+  resources: VirtualMachineResourceSettings;
+  rdp: VirtualMachineRdpSignal;
   conditions: KubeCondition[];
   activeOperations: VmOperation[];
 }
@@ -397,6 +499,8 @@ export interface VirtualMachineRootDiskSummary {
   volumeName: string;
   storageClassName?: string;
   size?: string;
+  currentSize?: string;
+  desiredSize?: string;
   volumeMode?: string;
 }
 

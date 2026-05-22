@@ -6,13 +6,31 @@ import {
   VM_MANAGER_OPERATION_TYPE_KEY,
 } from "./management";
 import { parseManualRuntimeAnnotations } from "./manual-runtime";
+import {
+  formatByteQuantity,
+  formatCpuQuantity,
+  parseByteQuantity,
+  parseCpuQuantity,
+  resourcePercent,
+} from "./quantity";
 import { compareTimestampsDesc, firstTimestamp } from "./timestamps";
 import type {
+  ClusterNodeLoad,
+  ClusterResourceLoad,
   KubeCondition,
+  KubeNode,
+  KubeNodeMetrics,
+  KubeResourceRequirements,
+  KubeVirtDomainSpec,
+  KubeVirtGuestUser,
   KubeVirtVirtualMachine,
   KubeVirtVirtualMachineInstance,
   KubeVirtVirtualMachineRestore,
   KubeVirtVirtualMachineSnapshot,
+  VirtualMachineGuestSession,
+  VirtualMachineRdpSignal,
+  VirtualMachineResourceProfile,
+  VirtualMachineResourceSettings,
   VirtualMachineRestoreSummary,
   VirtualMachineSnapshotSummary,
   VirtualMachineSummary,
@@ -23,6 +41,12 @@ import { isTerminalVmi } from "./vmi";
 
 function compact<T>(values: Array<T | null | undefined>): T[] {
   return values.filter((value): value is T => value !== null && value !== undefined);
+}
+
+interface ComparableResourceProfile extends VirtualMachineResourceProfile {
+  cpuComparable?: number | string;
+  memoryComparable?: number | string;
+  diskComparable?: number | string;
 }
 
 export function objectKey(namespace: string, name: string) {
@@ -129,6 +153,208 @@ export function getIpAddresses(vmi?: KubeVirtVirtualMachineInstance): string[] {
   );
 
   return Array.from(new Set(ips ?? [])).sort();
+}
+
+function cpuCount(domain?: KubeVirtDomainSpec): number | undefined {
+  const cpu = domain?.cpu;
+  if (!cpu) {
+    return undefined;
+  }
+
+  const sockets = cpu.sockets ?? 1;
+  const cores = cpu.cores ?? 1;
+  const threads = cpu.threads ?? 1;
+  const count = sockets * cores * threads;
+  return Number.isFinite(count) && count > 0 ? count : undefined;
+}
+
+function resourceValue(
+  resources: KubeResourceRequirements | undefined,
+  key: string,
+): string | number | undefined {
+  return resources?.requests?.[key] ?? resources?.limits?.[key];
+}
+
+function comparableQuantity(
+  formatted: string | undefined,
+  parsed: number | undefined,
+): number | string | undefined {
+  return parsed ?? formatted;
+}
+
+function vmResourceProfile(
+  domain: KubeVirtDomainSpec | undefined,
+  diskSize?: string,
+): ComparableResourceProfile {
+  const vcpus = cpuCount(domain);
+  const cpuQuantity = resourceValue(domain?.resources, "cpu");
+  const memoryQuantity = domain?.memory?.guest ?? resourceValue(domain?.resources, "memory");
+  const diskBytes = parseByteQuantity(diskSize);
+  const cpuLabel = vcpus
+    ? `${vcpus} vCPU${vcpus === 1 ? "" : "s"}`
+    : formatCpuQuantity(cpuQuantity);
+  const memoryLabel = formatByteQuantity(memoryQuantity);
+  const diskLabel = formatByteQuantity(diskSize);
+
+  return {
+    cpu: cpuLabel,
+    cpuComparable: vcpus ?? comparableQuantity(cpuLabel, parseCpuQuantity(cpuQuantity)),
+    memory: memoryLabel,
+    memoryComparable: comparableQuantity(memoryLabel, parseByteQuantity(memoryQuantity)),
+    disk: diskLabel,
+    diskComparable: comparableQuantity(diskLabel, diskBytes),
+  };
+}
+
+function profileForDisplay(profile: ComparableResourceProfile): VirtualMachineResourceProfile {
+  return {
+    cpu: profile.cpu,
+    memory: profile.memory,
+    disk: profile.disk,
+  };
+}
+
+function resourcesDiffer(
+  current: ComparableResourceProfile,
+  desired: ComparableResourceProfile,
+): boolean {
+  return (
+    current.cpuComparable !== desired.cpuComparable ||
+    current.memoryComparable !== desired.memoryComparable ||
+    current.diskComparable !== desired.diskComparable
+  );
+}
+
+export function getVmResourceSettings(
+  vm: KubeVirtVirtualMachine,
+  vmi?: KubeVirtVirtualMachineInstance,
+  currentRootDiskSize?: string,
+  desiredRootDiskSize = currentRootDiskSize,
+): VirtualMachineResourceSettings {
+  const desired = vmResourceProfile(vm.spec?.template?.spec?.domain, desiredRootDiskSize);
+  const current = vmi?.spec?.domain
+    ? vmResourceProfile(vmi.spec.domain, currentRootDiskSize)
+    : vmResourceProfile(vm.spec?.template?.spec?.domain, currentRootDiskSize);
+
+  return {
+    current: profileForDisplay(current),
+    desired: profileForDisplay(desired),
+    pendingRestart: resourcesDiffer(current, desired),
+  };
+}
+
+export function toRdpSignal(
+  powerState: VmPowerState,
+  users?: KubeVirtGuestUser[],
+  unavailableMessage?: string,
+): VirtualMachineRdpSignal {
+  if (powerState !== "online") {
+    return { status: "offline", sessions: [] };
+  }
+
+  if (!users) {
+    return { status: "unavailable", sessions: [], message: unavailableMessage };
+  }
+
+  const sessions = users
+    .map((user): VirtualMachineGuestSession | undefined => {
+      const userName = user.userName?.trim();
+      if (!userName) {
+        return undefined;
+      }
+
+      return {
+        userName,
+        domain: user.domain,
+        loginTime:
+          typeof user.loginTime === "number"
+            ? new Date(user.loginTime * 1000).toISOString()
+            : undefined,
+      };
+    })
+    .filter((session): session is VirtualMachineGuestSession => Boolean(session));
+
+  return {
+    status: sessions.length > 0 ? "active" : "inactive",
+    sessions,
+  };
+}
+
+function nodeRoles(labels: Record<string, string> | undefined): string[] {
+  const roles = Object.keys(labels ?? {})
+    .map((key) => key.match(/^node-role\.kubernetes\.io\/(.+)$/)?.[1])
+    .filter((role): role is string => Boolean(role));
+
+  return roles.length > 0 ? roles.sort() : ["worker"];
+}
+
+function nodeReady(node: KubeNode): boolean | null {
+  const condition = node.status?.conditions?.find((candidate) => candidate.type === "Ready");
+  if (!condition) {
+    return null;
+  }
+
+  return condition.status === "True";
+}
+
+function resourceLoad({
+  used,
+  capacity,
+  parse,
+  format,
+}: {
+  used?: string;
+  capacity?: string;
+  parse: (value?: string) => number | undefined;
+  format: (value?: string | number) => string | undefined;
+}): ClusterResourceLoad {
+  const parsedUsed = parse(used);
+  const parsedCapacity = parse(capacity);
+
+  return {
+    used: format(used),
+    capacity: format(capacity),
+    percent: resourcePercent(parsedUsed, parsedCapacity),
+  };
+}
+
+export function toClusterNodeLoad(
+  node: KubeNode,
+  metrics?: KubeNodeMetrics,
+): ClusterNodeLoad | undefined {
+  const name = node.metadata?.name;
+  if (!name) {
+    return undefined;
+  }
+
+  const allocatable = node.status?.allocatable ?? {};
+  const capacity = node.status?.capacity ?? {};
+  const usage = metrics?.usage ?? {};
+
+  return {
+    name,
+    roles: nodeRoles(node.metadata?.labels),
+    ready: nodeReady(node),
+    cpu: resourceLoad({
+      used: usage.cpu,
+      capacity: allocatable.cpu ?? capacity.cpu,
+      parse: parseCpuQuantity,
+      format: formatCpuQuantity,
+    }),
+    memory: resourceLoad({
+      used: usage.memory,
+      capacity: allocatable.memory ?? capacity.memory,
+      parse: parseByteQuantity,
+      format: formatByteQuantity,
+    }),
+    storage: resourceLoad({
+      used: usage["ephemeral-storage"],
+      capacity: allocatable["ephemeral-storage"] ?? capacity["ephemeral-storage"],
+      parse: parseByteQuantity,
+      format: formatByteQuantity,
+    }),
+    updatedAt: metrics?.timestamp,
+  };
 }
 
 function latestConditionMessage(conditions: KubeCondition[] | undefined): string | undefined {
@@ -417,6 +643,10 @@ export function toVmSummary(
   vmi?: KubeVirtVirtualMachineInstance,
   snapshots: KubeVirtVirtualMachineSnapshot[] = [],
   restores: KubeVirtVirtualMachineRestore[] = [],
+  rootDiskCurrentSize?: string,
+  rootDiskDesiredSize?: string,
+  guestUsers?: KubeVirtGuestUser[],
+  guestUserError?: string,
 ): VirtualMachineSummary {
   const name = vm.metadata?.name ?? "unknown";
   const namespace = vm.metadata?.namespace ?? "default";
@@ -442,6 +672,8 @@ export function toVmSummary(
       runStrategy === "Manual"
         ? parseManualRuntimeAnnotations(vm.metadata?.annotations)
         : undefined,
+    resources: getVmResourceSettings(vm, vmi, rootDiskCurrentSize, rootDiskDesiredSize),
+    rdp: toRdpSignal(powerState, guestUsers, guestUserError),
     conditions: vm.status?.conditions ?? [],
     activeOperations: getActiveOperations(vm, vmi, snapshots, restores),
   };

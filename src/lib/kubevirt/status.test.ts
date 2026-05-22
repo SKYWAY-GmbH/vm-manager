@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   getActiveOperations,
   getIpAddresses,
+  getVmResourceSettings,
   normalizePowerState,
+  toClusterNodeLoad,
+  toRdpSignal,
   toRestoreSummary,
   toSnapshotSummary,
   toVmSummary,
@@ -103,7 +106,85 @@ describe("KubeVirt status normalization", () => {
         durationDays: 7,
         vmiUid: "vmi-uid-1",
       },
+      rdp: { status: "unavailable", sessions: [] },
       activeOperations: [{ type: "snapshot", name: "snap-a", phase: "InProgress" }],
+    });
+  });
+
+  it("reports pending reboot resource settings from the VM template", () => {
+    const vm: KubeVirtVirtualMachine = {
+      metadata: { name: "vm-01", namespace: "windows" },
+      spec: {
+        template: {
+          spec: {
+            domain: {
+              cpu: { sockets: 1, cores: 4, threads: 1 },
+              memory: { guest: "8Gi" },
+            },
+          },
+        },
+      },
+    };
+    const vmi: KubeVirtVirtualMachineInstance = {
+      spec: {
+        domain: {
+          cpu: { sockets: 1, cores: 2, threads: 1 },
+          memory: { guest: "4Gi" },
+        },
+      },
+    };
+
+    expect(getVmResourceSettings(vm, vmi, "80Gi", "100Gi")).toEqual({
+      current: { cpu: "2 vCPUs", memory: "4 GiB", disk: "80 GiB" },
+      desired: { cpu: "4 vCPUs", memory: "8 GiB", disk: "100 GiB" },
+      pendingRestart: true,
+    });
+  });
+
+  it("uses guest-agent active users as the RDP signal", () => {
+    expect(
+      toRdpSignal("online", [{ domain: "SKYWAY", loginTime: 1_779_445_200, userName: "alice" }]),
+    ).toMatchObject({
+      status: "active",
+      sessions: [
+        {
+          domain: "SKYWAY",
+          loginTime: "2026-05-22T10:20:00.000Z",
+          userName: "alice",
+        },
+      ],
+    });
+  });
+});
+
+describe("cluster node load", () => {
+  it("combines node capacity with metrics-server usage", () => {
+    const load = toClusterNodeLoad(
+      {
+        metadata: {
+          name: "worker-1",
+          labels: { "node-role.kubernetes.io/worker": "" },
+        },
+        status: {
+          allocatable: { cpu: "4", memory: "16Gi", "ephemeral-storage": "100Gi" },
+          conditions: [{ type: "Ready", status: "True" }],
+        },
+      },
+      {
+        metadata: { name: "worker-1" },
+        timestamp: "2026-05-22T10:00:00Z",
+        usage: { cpu: "500m", memory: "4Gi" },
+      },
+    );
+
+    expect(load).toMatchObject({
+      name: "worker-1",
+      roles: ["worker"],
+      ready: true,
+      cpu: { used: "500m CPU", capacity: "4 CPU", percent: 12.5 },
+      memory: { used: "4 GiB", capacity: "16 GiB", percent: 25 },
+      storage: { capacity: "100 GiB" },
+      updatedAt: "2026-05-22T10:00:00Z",
     });
   });
 });
