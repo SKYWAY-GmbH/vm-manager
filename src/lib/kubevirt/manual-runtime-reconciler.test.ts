@@ -14,6 +14,7 @@ vi.mock("./client", () => ({
   requestKubeJson,
 }));
 
+import { VM_MANAGER_MANAGED_KEY } from "./management";
 import {
   VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY,
   VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY,
@@ -32,6 +33,7 @@ function manualVm(
     metadata: {
       name: "vm-01",
       namespace: "windows",
+      labels: { [VM_MANAGER_MANAGED_KEY]: "true" },
       annotations,
     },
     spec: { runStrategy: "Manual" },
@@ -44,6 +46,7 @@ function alwaysVm(annotations: Record<string, string> = {}): KubeVirtVirtualMach
     metadata: {
       name: "vm-01",
       namespace: "windows",
+      labels: { [VM_MANAGER_MANAGED_KEY]: "true" },
       annotations,
     },
     spec: { runStrategy: "Always" },
@@ -228,6 +231,24 @@ describe("Manual runtime reconciler", () => {
         [VM_MANAGER_MANUAL_RUNTIME_VMI_UID_KEY]: "vmi-uid-1",
       }),
     );
+
+    await reconcileManualRuntimeTimeouts(new Date("2026-05-20T10:00:00Z"));
+
+    expect(patchNamespacedCustomObjectMergePatch).not.toHaveBeenCalled();
+    expect(requestKubeJson).not.toHaveBeenCalled();
+  });
+
+  it("does not enforce runtime timers for unlabeled VMs", async () => {
+    const managedVm = manualVm({
+      [VM_MANAGER_MANUAL_RUNTIME_STARTED_AT_KEY]: "2026-05-19T10:00:00Z",
+      [VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY]: "2026-05-20T10:00:00Z",
+      [VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY]: "1",
+      [VM_MANAGER_MANUAL_RUNTIME_VMI_UID_KEY]: "vmi-uid-1",
+    });
+    setupLists({
+      ...managedVm,
+      metadata: { ...managedVm.metadata, labels: undefined },
+    });
 
     await reconcileManualRuntimeTimeouts(new Date("2026-05-20T10:00:00Z"));
 

@@ -1,11 +1,29 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+
+const customClient = vi.hoisted(() => ({
+  deleteNamespacedCustomObject: vi.fn(),
+  getNamespacedCustomObject: vi.fn(),
+}));
+const coreClient = vi.hoisted(() => ({
+  deletePersistentVolume: vi.fn(),
+  listPersistentVolume: vi.fn(),
+  readPersistentVolume: vi.fn(),
+}));
+
+vi.mock("./client", () => ({
+  getCoreV1Client: () => coreClient,
+  getCustomObjectsClient: () => customClient,
+  patchNamespacedCustomObjectMergePatch: vi.fn(),
+}));
 
 import {
   backupsForVm,
   buildRestoredPv,
   buildRestoredPvc,
+  discardRollback,
+  reapExpiredRollbacks,
   restoreVolumeName,
   sanitizeLonghornName,
   shortenLonghornName,
@@ -15,6 +33,10 @@ import {
 import type { KubePersistentVolume, KubePersistentVolumeClaim } from "./types";
 
 describe("Longhorn helper functions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("sanitizes generated Longhorn names as DNS-compatible values", () => {
     expect(sanitizeLonghornName("VM_01 Backup!!")).toBe("vm-01-backup");
     expect(sanitizeLonghornName("---", 20)).toBe("vm-manager");
@@ -158,5 +180,295 @@ describe("Longhorn helper functions", () => {
       volumeMode: "Filesystem",
       volumeName: "new-pv",
     });
+  });
+
+  it("does not reap rollback storage after its VM becomes unmanaged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const rollbackPv: KubePersistentVolume = {
+      metadata: {
+        name: "pv-old",
+        labels: { "vm-manager.skyway.tools/rollback": "true" },
+        annotations: {
+          "vm-manager.skyway.tools/vm-namespace": "windows",
+          "vm-manager.skyway.tools/vm-name": "vm-01",
+          "vm-manager.skyway.tools/rollback-expires-at": "2026-05-20T10:00:00Z",
+          "vm-manager.skyway.tools/rollback-volume": "volume-old",
+        },
+      },
+      spec: { csi: { volumeHandle: "volume-old" } },
+    };
+    coreClient.listPersistentVolume.mockResolvedValue({ items: [rollbackPv] });
+    coreClient.readPersistentVolume.mockResolvedValue(rollbackPv);
+    customClient.getNamespacedCustomObject.mockResolvedValue({
+      metadata: { name: "vm-01", namespace: "windows" },
+    });
+
+    try {
+      await reapExpiredRollbacks(new Date("2026-05-21T10:00:00Z"));
+
+      expect(coreClient.deletePersistentVolume).not.toHaveBeenCalled();
+      expect(customClient.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        "Retaining rollback pv-old: virtual machine windows/vm-01 is unmanaged.",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reaps expired rollback storage after its VM is deleted", async () => {
+    const rollbackPv: KubePersistentVolume = {
+      metadata: {
+        name: "pv-deleted-vm",
+        labels: { "vm-manager.skyway.tools/rollback": "true" },
+        annotations: {
+          "vm-manager.skyway.tools/vm-namespace": "windows",
+          "vm-manager.skyway.tools/vm-name": "vm-deleted",
+          "vm-manager.skyway.tools/rollback-expires-at": "2026-05-20T10:00:00Z",
+          "vm-manager.skyway.tools/rollback-volume": "volume-deleted-vm",
+        },
+      },
+      spec: { csi: { volumeHandle: "volume-deleted-vm" } },
+    };
+    coreClient.listPersistentVolume.mockResolvedValue({ items: [rollbackPv] });
+    coreClient.readPersistentVolume.mockResolvedValue(rollbackPv);
+    coreClient.deletePersistentVolume.mockResolvedValue({});
+    customClient.getNamespacedCustomObject.mockRejectedValue(
+      Object.assign(new Error("not found"), { code: 404 }),
+    );
+    customClient.deleteNamespacedCustomObject.mockResolvedValue({});
+
+    await reapExpiredRollbacks(new Date("2026-05-21T10:00:00Z"));
+
+    expect(customClient.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "volume-deleted-vm" }),
+    );
+    expect(coreClient.deletePersistentVolume).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "pv-deleted-vm" }),
+    );
+  });
+
+  it("warns and skips rollback storage with missing ownership annotations", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const rollbackPv: KubePersistentVolume = {
+        metadata: {
+          name: "pv-missing-owner",
+          labels: { "vm-manager.skyway.tools/rollback": "true" },
+          annotations: {
+            "vm-manager.skyway.tools/vm-namespace": "windows",
+            "vm-manager.skyway.tools/rollback-expires-at": "2026-05-20T10:00:00Z",
+          },
+        },
+      };
+      coreClient.listPersistentVolume.mockResolvedValue({ items: [rollbackPv] });
+      coreClient.readPersistentVolume.mockResolvedValue(rollbackPv);
+
+      await reapExpiredRollbacks(new Date("2026-05-21T10:00:00Z"));
+
+      expect(warn).toHaveBeenCalledWith(
+        "Skipping rollback pv-missing-owner: missing vm-manager.skyway.tools/vm-name annotation.",
+      );
+      expect(coreClient.deletePersistentVolume).not.toHaveBeenCalled();
+      expect(customClient.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reaps expired rollback storage for managed VMs", async () => {
+    const rollbackPv: KubePersistentVolume = {
+      metadata: {
+        name: "pv-old",
+        labels: { "vm-manager.skyway.tools/rollback": "true" },
+        annotations: {
+          "vm-manager.skyway.tools/vm-namespace": "windows",
+          "vm-manager.skyway.tools/vm-name": "vm-01",
+          "vm-manager.skyway.tools/rollback-expires-at": "2026-05-20T10:00:00Z",
+          "vm-manager.skyway.tools/rollback-volume": "volume-old",
+        },
+      },
+      spec: { csi: { volumeHandle: "volume-old" } },
+    };
+    coreClient.listPersistentVolume.mockResolvedValue({ items: [rollbackPv] });
+    coreClient.readPersistentVolume.mockResolvedValue(rollbackPv);
+    coreClient.deletePersistentVolume.mockResolvedValue({});
+    customClient.getNamespacedCustomObject.mockResolvedValue({
+      metadata: {
+        name: "vm-01",
+        namespace: "windows",
+        labels: { "vm-manager.skyway.tools/managed": "true" },
+      },
+    });
+    customClient.deleteNamespacedCustomObject.mockResolvedValue({});
+
+    await reapExpiredRollbacks(new Date("2026-05-21T10:00:00Z"));
+
+    expect(coreClient.deletePersistentVolume).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "pv-old" }),
+    );
+    expect(customClient.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "volume-old", plural: "volumes" }),
+    );
+    expect(customClient.deleteNamespacedCustomObject.mock.invocationCallOrder[0]).toBeLessThan(
+      coreClient.deletePersistentVolume.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("skips rollback storage with malformed expiration timestamps", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      coreClient.listPersistentVolume.mockResolvedValue({
+        items: [
+          {
+            metadata: {
+              name: "pv-invalid",
+              labels: { "vm-manager.skyway.tools/rollback": "true" },
+              annotations: {
+                "vm-manager.skyway.tools/rollback-expires-at": "not-a-date",
+              },
+            },
+          },
+        ],
+      });
+
+      await reapExpiredRollbacks(new Date("2026-05-21T10:00:00Z"));
+
+      expect(coreClient.readPersistentVolume).not.toHaveBeenCalled();
+      expect(coreClient.deletePersistentVolume).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        'Skipping rollback pv-invalid: invalid vm-manager.skyway.tools/rollback-expires-at value "not-a-date" and no valid creation timestamp.',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("uses creation time when a rollback expiration timestamp is malformed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const rollbackPv: KubePersistentVolume = {
+        metadata: {
+          name: "pv-fallback-expiration",
+          creationTimestamp: "2026-05-19T10:00:00Z",
+          labels: { "vm-manager.skyway.tools/rollback": "true" },
+          annotations: {
+            "vm-manager.skyway.tools/vm-namespace": "windows",
+            "vm-manager.skyway.tools/vm-name": "vm-deleted",
+            "vm-manager.skyway.tools/rollback-expires-at": "not-a-date",
+            "vm-manager.skyway.tools/rollback-volume": "volume-fallback-expiration",
+          },
+        },
+      };
+      coreClient.listPersistentVolume.mockResolvedValue({ items: [rollbackPv] });
+      coreClient.readPersistentVolume.mockResolvedValue(rollbackPv);
+      coreClient.deletePersistentVolume.mockResolvedValue({});
+      customClient.getNamespacedCustomObject.mockRejectedValue(
+        Object.assign(new Error("not found"), { code: 404 }),
+      );
+      customClient.deleteNamespacedCustomObject.mockResolvedValue({});
+
+      await reapExpiredRollbacks(new Date("2026-05-21T10:00:00Z"));
+
+      expect(warn).toHaveBeenCalledWith(
+        'Rollback pv-fallback-expiration has invalid vm-manager.skyway.tools/rollback-expires-at value "not-a-date"; using creation time plus 24 hours.',
+      );
+      expect(coreClient.deletePersistentVolume).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "pv-fallback-expiration" }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("continues reaping later rollbacks after an item fails", async () => {
+    const rollbackPv = (
+      name: string,
+      vmName: string,
+      volumeName: string,
+    ): KubePersistentVolume => ({
+      metadata: {
+        name,
+        labels: { "vm-manager.skyway.tools/rollback": "true" },
+        annotations: {
+          "vm-manager.skyway.tools/vm-namespace": "windows",
+          "vm-manager.skyway.tools/vm-name": vmName,
+          "vm-manager.skyway.tools/rollback-expires-at": "2026-05-20T10:00:00Z",
+          "vm-manager.skyway.tools/rollback-volume": volumeName,
+        },
+      },
+      spec: { csi: { volumeHandle: volumeName } },
+    });
+    const first = rollbackPv("pv-first", "vm-first", "volume-first");
+    const second = rollbackPv("pv-second", "vm-second", "volume-second");
+    coreClient.listPersistentVolume.mockResolvedValue({ items: [first, second] });
+    coreClient.readPersistentVolume.mockImplementation(({ name }: { name: string }) =>
+      Promise.resolve(name === "pv-first" ? first : second),
+    );
+    coreClient.deletePersistentVolume.mockResolvedValue({});
+    customClient.getNamespacedCustomObject.mockImplementation(({ name }: { name: string }) =>
+      Promise.resolve({
+        metadata: {
+          name,
+          namespace: "windows",
+          labels: { "vm-manager.skyway.tools/managed": "true" },
+        },
+      }),
+    );
+    customClient.deleteNamespacedCustomObject.mockImplementation(({ name }: { name: string }) =>
+      name === "volume-first"
+        ? Promise.reject(new Error("Longhorn unavailable"))
+        : Promise.resolve({}),
+    );
+
+    await expect(reapExpiredRollbacks(new Date("2026-05-21T10:00:00Z"))).rejects.toThrow(
+      "Failed to reap 1 rollback(s).",
+    );
+
+    expect(coreClient.deletePersistentVolume).toHaveBeenCalledTimes(1);
+    expect(coreClient.deletePersistentVolume).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "pv-second" }),
+    );
+  });
+
+  it("deletes a rollback Longhorn volume before its PV", async () => {
+    coreClient.readPersistentVolume.mockResolvedValue({
+      metadata: {
+        name: "pv-discard",
+        labels: { "vm-manager.skyway.tools/rollback": "true" },
+        annotations: {
+          "vm-manager.skyway.tools/vm-namespace": "windows",
+          "vm-manager.skyway.tools/vm-name": "vm-01",
+          "vm-manager.skyway.tools/rollback-volume": "volume-discard",
+        },
+      },
+    });
+    customClient.deleteNamespacedCustomObject.mockResolvedValue({});
+    coreClient.deletePersistentVolume.mockResolvedValue({});
+
+    await discardRollback("windows", "vm-01", "pv-discard");
+
+    expect(customClient.deleteNamespacedCustomObject.mock.invocationCallOrder[0]).toBeLessThan(
+      coreClient.deletePersistentVolume.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("rejects rollback discard when ownership annotations do not match", async () => {
+    coreClient.readPersistentVolume.mockResolvedValue({
+      metadata: {
+        name: "pv-other",
+        labels: { "vm-manager.skyway.tools/rollback": "true" },
+        annotations: {
+          "vm-manager.skyway.tools/vm-namespace": "windows",
+          "vm-manager.skyway.tools/vm-name": "vm-other",
+        },
+      },
+    });
+
+    await expect(discardRollback("windows", "vm-01", "pv-other")).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(customClient.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(coreClient.deletePersistentVolume).not.toHaveBeenCalled();
   });
 });
