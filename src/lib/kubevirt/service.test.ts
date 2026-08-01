@@ -47,6 +47,7 @@ const longhornApi = vi.hoisted(() => ({
 
 vi.mock("./longhorn-api", () => longhornApi);
 
+import { VM_MANAGER_MANAGED_KEY } from "./management";
 import {
   VM_MANAGER_MANUAL_RUNTIME_DURATION_DAYS_KEY,
   VM_MANAGER_MANUAL_RUNTIME_EXPIRES_AT_KEY,
@@ -56,6 +57,8 @@ import {
 } from "./manual-runtime";
 import {
   createVirtualMachineSnapshot,
+  listVirtualMachineRollbacks,
+  listVirtualMachines,
   performVirtualMachineAction,
   resetVirtualMachineManualRuntimeTimeout,
   restoreVirtualMachineBackup,
@@ -74,7 +77,11 @@ function notFoundError() {
 }
 
 const vm: KubeVirtVirtualMachine = {
-  metadata: { name: "vm-01", namespace: "windows" },
+  metadata: {
+    name: "vm-01",
+    namespace: "windows",
+    labels: { [VM_MANAGER_MANAGED_KEY]: "true" },
+  },
   spec: {
     runStrategy: "Manual",
     template: {
@@ -259,6 +266,47 @@ function setupBase({
 describe("Longhorn rootdisk operations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("omits unlabeled VMs from inventory", async () => {
+    customClient.listCustomObjectForAllNamespaces.mockImplementation(
+      ({ plural }: { plural: string }) =>
+        Promise.resolve({
+          items:
+            plural === "virtualmachines"
+              ? [{ ...vm, metadata: { name: "unmanaged", namespace: "windows" } }, vm]
+              : [],
+        }),
+    );
+
+    await expect(listVirtualMachines()).resolves.toMatchObject([{ name: "vm-01" }]);
+  });
+
+  it("rejects actions for unlabeled VMs before issuing mutations", async () => {
+    setupBase({
+      virtualMachine: { ...vm, metadata: { name: "vm-01", namespace: "windows" } },
+    });
+
+    await expect(
+      performVirtualMachineAction("windows", "vm-01", "force-stop"),
+    ).rejects.toMatchObject({
+      status: 404,
+      message: "Virtual machine windows/vm-01 was not found.",
+    });
+    expect(rawKubeRequest).not.toHaveBeenCalled();
+    expect(patchNamespacedCustomObjectMergePatch).not.toHaveBeenCalled();
+    expect(longhornApi.attachVolumeForMaintenance).not.toHaveBeenCalled();
+  });
+
+  it("rejects rollback listing for unlabeled VMs", async () => {
+    setupBase({
+      virtualMachine: { ...vm, metadata: { name: "vm-01", namespace: "windows" } },
+    });
+
+    await expect(listVirtualMachineRollbacks("windows", "vm-01")).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(coreClient.listPersistentVolume).not.toHaveBeenCalled();
   });
 
   it("starts Manual VMs with runtime timeout annotations", async () => {

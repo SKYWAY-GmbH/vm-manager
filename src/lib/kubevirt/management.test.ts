@@ -1,9 +1,33 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { isManagedVirtualMachine, VM_MANAGER_MANAGED_KEY } from "./management";
 
 describe("isManagedVirtualMachine", () => {
-  it("keeps VMs managed by default", () => {
-    expect(isManagedVirtualMachine({ metadata: { name: "vm-01" } })).toBe(true);
+  it("excludes unlabeled VMs by default", () => {
+    expect(isManagedVirtualMachine({ metadata: { name: "vm-01" } })).toBe(false);
+  });
+
+  it("includes VMs enabled by label", () => {
+    expect(
+      isManagedVirtualMachine({
+        metadata: {
+          labels: {
+            [VM_MANAGER_MANAGED_KEY]: "true",
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("includes VMs enabled by annotation", () => {
+    expect(
+      isManagedVirtualMachine({
+        metadata: {
+          annotations: {
+            [VM_MANAGER_MANAGED_KEY]: "true",
+          },
+        },
+      }),
+    ).toBe(true);
   });
 
   it("excludes VMs disabled by label", () => {
@@ -28,5 +52,49 @@ describe("isManagedVirtualMachine", () => {
         },
       }),
     ).toBe(false);
+  });
+
+  it("warns once and excludes VMs with unrecognized managed values", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const invalidVm = {
+        metadata: {
+          name: "invalid-marker",
+          namespace: "windows",
+          labels: {
+            [VM_MANAGER_MANAGED_KEY]: "enabled",
+          },
+        },
+      };
+
+      expect(isManagedVirtualMachine(invalidVm)).toBe(false);
+      expect(isManagedVirtualMachine(invalidVm)).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        `Ignoring windows/invalid-marker: ${VM_MANAGER_MANAGED_KEY} has invalid value "enabled".`,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("warns and excludes VMs with empty managed values", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(
+        isManagedVirtualMachine({
+          metadata: {
+            name: "empty-marker",
+            namespace: "windows",
+            annotations: { [VM_MANAGER_MANAGED_KEY]: "" },
+          },
+        }),
+      ).toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        `Ignoring windows/empty-marker: ${VM_MANAGER_MANAGED_KEY} has invalid value "".`,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

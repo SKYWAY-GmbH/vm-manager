@@ -8,6 +8,7 @@ import {
 } from "./client";
 import { ApiError, getErrorStatus } from "./errors";
 import {
+  isManagedVirtualMachine,
   VM_MANAGER_MANAGED_KEY,
   VM_MANAGER_OPERATION_MESSAGE_KEY,
   VM_MANAGER_OPERATION_NAME_KEY,
@@ -687,6 +688,7 @@ export async function discardRollback(namespace: string, vmName: string, pvName:
 
   const volumeName =
     pv.metadata?.annotations?.[VM_MANAGER_ROLLBACK_VOLUME_KEY] ?? pv.spec?.csi?.volumeHandle;
+  await deleteLonghornVolumeIfPresent(volumeName);
   await getCoreV1Client().deletePersistentVolume({
     name: pvName,
     gracePeriodSeconds: 0,
@@ -698,7 +700,6 @@ export async function discardRollback(namespace: string, vmName: string, pvName:
       propagationPolicy: "Background",
     },
   });
-  await deleteLonghornVolumeIfPresent(volumeName);
 }
 
 let reaperStarted = false;
@@ -725,26 +726,66 @@ export function ensureRollbackReaperStarted() {
 
 export async function reapExpiredRollbacks(now = new Date()) {
   const rollbacks = await listRollbackPvs();
+  const failures: unknown[] = [];
 
   for (const rollback of rollbacks) {
-    if (!rollback.expiresAt || Date.parse(rollback.expiresAt) > now.getTime()) {
+    if (!rollback.expiresAt) {
       continue;
     }
 
-    const pv = await readPv(rollback.pvName);
-    await getCoreV1Client().deletePersistentVolume({
-      name: rollback.pvName,
-      gracePeriodSeconds: 0,
-      propagationPolicy: "Background",
-      body: {
-        apiVersion: "v1",
-        kind: "DeleteOptions",
+    const expiresAt = Date.parse(rollback.expiresAt);
+    if (!Number.isFinite(expiresAt)) {
+      console.warn(
+        `Skipping rollback ${rollback.pvName}: invalid ${VM_MANAGER_ROLLBACK_EXPIRES_AT_KEY} value ${JSON.stringify(rollback.expiresAt)}.`,
+      );
+      continue;
+    }
+
+    if (expiresAt > now.getTime()) {
+      continue;
+    }
+
+    try {
+      const pv = await readPv(rollback.pvName);
+      const namespace = pv.metadata?.annotations?.[VM_MANAGER_VM_NAMESPACE_KEY];
+      const vmName = pv.metadata?.annotations?.[VM_MANAGER_VM_NAME_KEY];
+      if (!namespace || !vmName) {
+        continue;
+      }
+
+      const vm = (await getCustomObjectsClient().getNamespacedCustomObject({
+        group: "kubevirt.io",
+        version: "v1",
+        namespace,
+        plural: "virtualmachines",
+        name: vmName,
+      })) as KubeVirtVirtualMachine;
+      if (!isManagedVirtualMachine(vm)) {
+        continue;
+      }
+
+      await deleteLonghornVolumeIfPresent(
+        pv.metadata?.annotations?.[VM_MANAGER_ROLLBACK_VOLUME_KEY] ?? pv.spec?.csi?.volumeHandle,
+      );
+      await getCoreV1Client().deletePersistentVolume({
+        name: rollback.pvName,
         gracePeriodSeconds: 0,
         propagationPolicy: "Background",
-      },
-    });
-    await deleteLonghornVolumeIfPresent(
-      pv.metadata?.annotations?.[VM_MANAGER_ROLLBACK_VOLUME_KEY] ?? pv.spec?.csi?.volumeHandle,
-    );
+        body: {
+          apiVersion: "v1",
+          kind: "DeleteOptions",
+          gracePeriodSeconds: 0,
+          propagationPolicy: "Background",
+        },
+      });
+    } catch (error) {
+      if (!isNotFound(error)) {
+        failures.push(new Error(`Failed to reap rollback ${rollback.pvName}.`, { cause: error }));
+      }
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `Failed to reap ${failures.length} rollback(s).`);
   }
 }

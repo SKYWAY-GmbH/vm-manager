@@ -157,7 +157,7 @@ async function readVirtualMachine(
       name,
     })) as KubeVirtVirtualMachine;
     if (!isManagedVirtualMachine(vm)) {
-      throw new ApiError(404, `Virtual machine ${namespace}/${name} is not managed by this app.`);
+      throw new ApiError(404, `Virtual machine ${namespace}/${name} was not found.`);
     }
 
     return vm;
@@ -639,12 +639,25 @@ export async function getVirtualMachine(
   } catch (error) {
     if (error instanceof ApiError) {
       const guestUsers = await guestUsersPromise;
+      let protectionError = error.message;
+      let rollbacks: VirtualMachineRollbackSummary[] = [];
+      try {
+        rollbacks = await listRollbackPvs(namespace, name);
+      } catch (rollbackError) {
+        const message =
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : "Unknown rollback inventory error.";
+        console.error(`Failed to list rollbacks for ${namespace}/${name}`, rollbackError);
+        protectionError = `${protectionError} Rollback inventory unavailable: ${message}`;
+      }
+
       return {
         ...toVmSummary(vm, vmi, [], [], undefined, undefined, guestUsers.users, guestUsers.error),
-        protectionError: error.message,
+        protectionError,
         snapshots: [],
         backups: [],
-        rollbacks: await listRollbackPvs(namespace, name).catch(() => []),
+        rollbacks,
         restores: [],
       };
     }
@@ -781,6 +794,7 @@ export async function listVirtualMachineRollbacks(
   namespace: string,
   name: string,
 ): Promise<VirtualMachineRollbackSummary[]> {
+  await readVirtualMachine(namespace, name);
   return listRollbackPvs(namespace, name);
 }
 
