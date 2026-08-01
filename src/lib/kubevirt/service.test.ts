@@ -57,6 +57,7 @@ import {
 } from "./manual-runtime";
 import {
   createVirtualMachineSnapshot,
+  getVirtualMachine,
   listVirtualMachineRollbacks,
   listVirtualMachines,
   performVirtualMachineAction,
@@ -307,6 +308,28 @@ describe("Longhorn rootdisk operations", () => {
       status: 404,
     });
     expect(coreClient.listPersistentVolume).not.toHaveBeenCalled();
+  });
+
+  it("surfaces rollback inventory failures in degraded VM details", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      setupBase();
+      coreClient.readNamespacedPersistentVolumeClaim.mockRejectedValue(notFoundError());
+      coreClient.listPersistentVolume.mockRejectedValue(new Error("PV API unavailable"));
+
+      await expect(getVirtualMachine("windows", "vm-01")).resolves.toMatchObject({
+        protectionError: expect.stringContaining(
+          "Rollback inventory unavailable: PV API unavailable",
+        ),
+        rollbacks: [],
+      });
+      expect(error).toHaveBeenCalledWith(
+        "Failed to list rollbacks for windows/vm-01",
+        expect.any(Error),
+      );
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("starts Manual VMs with runtime timeout annotations", async () => {

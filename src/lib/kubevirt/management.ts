@@ -8,7 +8,7 @@ export const VM_MANAGER_OPERATION_STARTED_AT_KEY = "vm-manager.skyway.tools/oper
 export const VM_MANAGER_OPERATION_MESSAGE_KEY = "vm-manager.skyway.tools/operation-message";
 
 function isEnabledFlag(value: string): boolean {
-  return value.toLowerCase() === "true";
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
 function isDisabledFlag(value: string): boolean {
@@ -16,6 +16,7 @@ function isDisabledFlag(value: string): boolean {
 }
 
 const warnedInvalidManagedValues = new Set<string>();
+const MAX_MANAGED_VALUE_WARNINGS = 500;
 
 export function isManagedVirtualMachine(vm: KubeVirtVirtualMachine): boolean {
   const managedValue =
@@ -34,6 +35,9 @@ export function isManagedVirtualMachine(vm: KubeVirtVirtualMachine): boolean {
   const name = vm.metadata?.name ?? "unknown";
   const warningKey = `${namespace}/${name}:${managedValue}`;
   if (!warnedInvalidManagedValues.has(warningKey)) {
+    if (warnedInvalidManagedValues.size >= MAX_MANAGED_VALUE_WARNINGS) {
+      warnedInvalidManagedValues.clear();
+    }
     warnedInvalidManagedValues.add(warningKey);
     console.warn(
       `Ignoring ${namespace}/${name}: ${VM_MANAGER_MANAGED_KEY} has invalid value ${JSON.stringify(managedValue)}.`,

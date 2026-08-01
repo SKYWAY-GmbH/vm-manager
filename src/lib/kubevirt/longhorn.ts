@@ -43,6 +43,20 @@ const ROOTDISK_VOLUME_NAME = "rootdisk";
 const BACKEND_STATE_PREFIX = "persistent-state-for-";
 const ROLLBACK_RETENTION_MS = 24 * 60 * 60 * 1000;
 const LONGHORN_VOLUME_NAME_MAX_LENGTH = 40;
+const MAX_ROLLBACK_WARNINGS = 500;
+const warnedRollbackIssues = new Set<string>();
+
+function warnRollbackOnce(key: string, message: string) {
+  if (warnedRollbackIssues.has(key)) {
+    return;
+  }
+
+  if (warnedRollbackIssues.size >= MAX_ROLLBACK_WARNINGS) {
+    warnedRollbackIssues.clear();
+  }
+  warnedRollbackIssues.add(key);
+  console.warn(message);
+}
 
 export const VM_MANAGER_VM_NAMESPACE_KEY = "vm-manager.skyway.tools/vm-namespace";
 export const VM_MANAGER_VM_NAME_KEY = "vm-manager.skyway.tools/vm-name";
@@ -733,12 +747,22 @@ export async function reapExpiredRollbacks(now = new Date()) {
       continue;
     }
 
-    const expiresAt = Date.parse(rollback.expiresAt);
+    let expiresAt = Date.parse(rollback.expiresAt);
     if (!Number.isFinite(expiresAt)) {
-      console.warn(
-        `Skipping rollback ${rollback.pvName}: invalid ${VM_MANAGER_ROLLBACK_EXPIRES_AT_KEY} value ${JSON.stringify(rollback.expiresAt)}.`,
+      const createdAt = rollback.createdAt ? Date.parse(rollback.createdAt) : Number.NaN;
+      if (!Number.isFinite(createdAt)) {
+        warnRollbackOnce(
+          `${rollback.pvName}:invalid-expiration:${rollback.expiresAt}`,
+          `Skipping rollback ${rollback.pvName}: invalid ${VM_MANAGER_ROLLBACK_EXPIRES_AT_KEY} value ${JSON.stringify(rollback.expiresAt)} and no valid creation timestamp.`,
+        );
+        continue;
+      }
+
+      expiresAt = createdAt + ROLLBACK_RETENTION_MS;
+      warnRollbackOnce(
+        `${rollback.pvName}:fallback-expiration:${rollback.expiresAt}`,
+        `Rollback ${rollback.pvName} has invalid ${VM_MANAGER_ROLLBACK_EXPIRES_AT_KEY} value ${JSON.stringify(rollback.expiresAt)}; using creation time plus 24 hours.`,
       );
-      continue;
     }
 
     if (expiresAt > now.getTime()) {
@@ -750,19 +774,37 @@ export async function reapExpiredRollbacks(now = new Date()) {
       const namespace = pv.metadata?.annotations?.[VM_MANAGER_VM_NAMESPACE_KEY];
       const vmName = pv.metadata?.annotations?.[VM_MANAGER_VM_NAME_KEY];
       if (!namespace || !vmName) {
+        warnRollbackOnce(
+          `${rollback.pvName}:missing-owner`,
+          `Skipping rollback ${rollback.pvName}: missing ${!namespace ? VM_MANAGER_VM_NAMESPACE_KEY : VM_MANAGER_VM_NAME_KEY} annotation.`,
+        );
         continue;
       }
 
-      const vm = (await getCustomObjectsClient().getNamespacedCustomObject({
-        group: "kubevirt.io",
-        version: "v1",
-        namespace,
-        plural: "virtualmachines",
-        name: vmName,
-      })) as KubeVirtVirtualMachine;
-      if (!isManagedVirtualMachine(vm)) {
+      let vm: KubeVirtVirtualMachine | undefined;
+      try {
+        vm = (await getCustomObjectsClient().getNamespacedCustomObject({
+          group: "kubevirt.io",
+          version: "v1",
+          namespace,
+          plural: "virtualmachines",
+          name: vmName,
+        })) as KubeVirtVirtualMachine;
+      } catch (error) {
+        if (!isNotFound(error)) {
+          throw error;
+        }
+      }
+
+      if (vm && !isManagedVirtualMachine(vm)) {
+        warnRollbackOnce(
+          `${rollback.pvName}:unmanaged-owner`,
+          `Retaining rollback ${rollback.pvName}: virtual machine ${namespace}/${vmName} is unmanaged.`,
+        );
         continue;
       }
+
+      warnedRollbackIssues.delete(`${rollback.pvName}:unmanaged-owner`);
 
       await deleteLonghornVolumeIfPresent(
         pv.metadata?.annotations?.[VM_MANAGER_ROLLBACK_VOLUME_KEY] ?? pv.spec?.csi?.volumeHandle,

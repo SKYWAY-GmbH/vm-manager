@@ -18,8 +18,9 @@ The app has no built-in authentication and contains no secrets. Production acces
 
 ## Managed VM scope
 
-VM management is explicit opt-in. Before upgrading from version 0.10.2 or earlier, mark every VM
-that the app should continue managing:
+VM management is explicit opt-in. The accepted enabled values are `true`, `1`, `yes`, and `on`
+(case-insensitive). Before upgrading from version 0.10.2 or earlier, mark every VM that the app
+should continue managing:
 
 ```sh
 kubectl label virtualmachine -n <namespace> <name> vm-manager.skyway.tools/managed=true
@@ -28,6 +29,11 @@ kubectl label virtualmachine -n <namespace> <name> vm-manager.skyway.tools/manag
 Unlabeled VMs are excluded from the inventory, API actions, storage operations, and the Manual VM
 runtime reconciler. Existing runtime timers on an unlabeled VM will therefore not be enforced.
 Invalid marker values also fail closed and are reported in the server log.
+
+Before setting a VM to `managed=false`, discard any retained rollback storage through the app. If a
+VM was already opted out, temporarily set it back to `managed=true`, discard its rollbacks, then set
+it to `managed=false` again. Rollback storage for an existing unmanaged VM is intentionally left
+untouched; rollback storage for a deleted VM is reclaimed after its normal retention period.
 
 ## Screenshots
 

@@ -30,6 +30,16 @@ describe("isManagedVirtualMachine", () => {
     ).toBe(true);
   });
 
+  it.each(["1", "yes", "on"])("includes VMs enabled with legacy truthy value %s", (value) => {
+    expect(
+      isManagedVirtualMachine({
+        metadata: {
+          annotations: { [VM_MANAGER_MANAGED_KEY]: value },
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("excludes VMs disabled by label", () => {
     expect(
       isManagedVirtualMachine({
@@ -69,9 +79,23 @@ describe("isManagedVirtualMachine", () => {
 
       expect(isManagedVirtualMachine(invalidVm)).toBe(false);
       expect(isManagedVirtualMachine(invalidVm)).toBe(false);
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn).toHaveBeenCalledWith(
+      expect(
+        isManagedVirtualMachine({
+          ...invalidVm,
+          metadata: {
+            ...invalidVm.metadata,
+            labels: { [VM_MANAGER_MANAGED_KEY]: "still-invalid" },
+          },
+        }),
+      ).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenNthCalledWith(
+        1,
         `Ignoring windows/invalid-marker: ${VM_MANAGER_MANAGED_KEY} has invalid value "enabled".`,
+      );
+      expect(warn).toHaveBeenNthCalledWith(
+        2,
+        `Ignoring windows/invalid-marker: ${VM_MANAGER_MANAGED_KEY} has invalid value "still-invalid".`,
       );
     } finally {
       warn.mockRestore();
