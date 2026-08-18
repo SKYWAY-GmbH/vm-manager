@@ -17,7 +17,7 @@ env:
 jobs:
   publish:
     name: Publish GHCR image
-    runs-on: arc-skyway
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
