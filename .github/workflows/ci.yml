@@ -15,7 +15,8 @@ env:
 jobs:
   check:
     name: Check
-    runs-on: ubuntu-latest
+    # Public pull requests stay isolated on GitHub-hosted infrastructure.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'arc-skyway' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
