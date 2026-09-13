@@ -1,5 +1,12 @@
 # SKYWAY VM Manager
 
+
+## At a glance
+
+A dark KubeVirt control panel for starting, stopping, snapshotting, and restoring managed SKYWAY virtual machines.
+
+![VM inventory](public/screenshots/vm-manager-inventory.png)
+
 Dark-only KubeVirt control GUI for SKYWAY virtual machines.
 
 The app has no built-in authentication and contains no secrets. Production access is expected to be enforced in front of the service by company Pangolin SSO.
