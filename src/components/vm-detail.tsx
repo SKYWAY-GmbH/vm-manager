@@ -188,7 +188,8 @@ function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
             </GuideStep>
             <GuideStep number="3" title="Sign in">
               Enter the VM username in the <strong>User name</strong> field and its password in the
-              <strong> Password</strong> field. Accept the certificate warning if it appears.
+              <strong> Password</strong> field. If a certificate warning appears, verify it with
+              your administrator before continuing.
             </GuideStep>
           </TabsContent>
           <TabsContent value="macos" className="mt-4 space-y-4">
@@ -203,7 +204,7 @@ function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
             </GuideStep>
             <GuideStep number="3" title="Connect and sign in">
               Save the entry, open it, then enter the VM username and password when prompted. Accept
-              the certificate warning if it appears.
+              the certificate warning with your administrator before continuing if it appears.
             </GuideStep>
           </TabsContent>
         </Tabs>
