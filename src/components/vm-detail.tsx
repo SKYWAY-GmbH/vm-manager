@@ -149,7 +149,26 @@ function vmEndpoint(vm: Pick<VirtualMachineDetail, "namespace" | "name">) {
 }
 
 function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
-  const ipAddresses = vm.ipAddresses.length > 0 ? vm.ipAddresses.join(", ") : undefined;
+  const ipAddresses = vm.ipAddresses;
+  const addressInstructions =
+    ipAddresses.length > 0 ? (
+      <>
+        Enter one of these addresses in the PC name field:
+        <span className="mt-1 flex flex-wrap gap-1.5">
+          {ipAddresses.map((address) => (
+            <code key={address} className="rounded bg-muted px-1.5 py-0.5 text-xs">
+              {address}
+            </code>
+          ))}
+        </span>
+        Try the addresses one at a time if the first one does not connect.
+      </>
+    ) : (
+      <>
+        No VM address is currently available. Wait for the VM network to become ready, then try
+        again.
+      </>
+    );
 
   return (
     <Dialog>
@@ -183,18 +202,7 @@ function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
               Search for <strong>Remote Desktop Connection</strong> from the Windows Start menu.
             </GuideStep>
             <GuideStep number="2" title="Enter the VM address">
-              {ipAddresses ? (
-                <>
-                  Enter{" "}
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{ipAddresses}</code> in
-                  the PC name field, then select <strong>Connect</strong>.
-                </>
-              ) : (
-                <>
-                  Enter the VM address shown in the Current state section in the PC name field, then
-                  select <strong>Connect</strong>.
-                </>
-              )}
+              {addressInstructions} Then select <strong>Connect</strong>.
             </GuideStep>
             <GuideStep number="3" title="Sign in">
               Enter the VM username in the <strong>User name</strong> field and its password in the
@@ -208,19 +216,12 @@ function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
               App Store, then open it.
             </GuideStep>
             <GuideStep number="2" title="Add a PC">
-              Select <strong>+</strong>, choose <strong>PC</strong>, and enter{" "}
-              {ipAddresses ? (
-                <>
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{ipAddresses}</code> as
-                  the PC name.
-                </>
-              ) : (
-                <>the VM address shown in the Current state section as the PC name.</>
-              )}
+              Select <strong>+</strong>, choose <strong>PC</strong>, and {addressInstructions}
             </GuideStep>
             <GuideStep number="3" title="Connect and sign in">
               Save the entry, open it, then enter the VM username and password when prompted. Accept
-              the certificate warning with your administrator before continuing if it appears.
+              If a certificate warning appears, verify the certificate details with your
+              administrator before accepting.
             </GuideStep>
           </TabsContent>
         </Tabs>
