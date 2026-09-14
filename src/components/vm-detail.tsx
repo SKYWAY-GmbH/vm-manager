@@ -1,10 +1,20 @@
 "use client";
 
-import { ArrowLeft } from "lucide-react";
+import { Apple, ArrowLeft, CircleHelp, Monitor } from "lucide-react";
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SnapshotControls } from "@/components/snapshot-controls";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { VmActionButtons } from "@/components/vm-action-menu";
 import {
   formatDateTime,
@@ -138,6 +148,92 @@ function vmEndpoint(vm: Pick<VirtualMachineDetail, "namespace" | "name">) {
   return `/api/vms/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}`;
 }
 
+function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
+  const ipAddress = vm.ipAddresses[0] ?? "the VM IP address shown above";
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          <CircleHelp aria-hidden="true" />
+          How to use
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[min(40rem,calc(100vh-2rem))] max-w-lg overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Connect to this virtual machine</DialogTitle>
+          <DialogDescription>
+            Choose your computer below. You’ll need the VM address and the credentials provided to
+            you.
+          </DialogDescription>
+        </DialogHeader>
+        <Tabs defaultValue="windows" className="mt-1">
+          <TabsList className="w-full">
+            <TabsTrigger value="windows" className="gap-2">
+              <Monitor aria-hidden="true" />
+              Windows
+            </TabsTrigger>
+            <TabsTrigger value="macos" className="gap-2">
+              <Apple aria-hidden="true" />
+              macOS
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="windows" className="mt-4 space-y-4">
+            <GuideStep number="1" title="Open Remote Desktop">
+              Search for <strong>Remote Desktop Connection</strong> from the Windows Start menu.
+            </GuideStep>
+            <GuideStep number="2" title="Enter the VM address">
+              Enter <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{ipAddress}</code> in
+              the PC name field, then select <strong>Connect</strong>.
+            </GuideStep>
+            <GuideStep number="3" title="Sign in">
+              Enter the VM username in the <strong>User name</strong> field and its password in the
+              <strong> Password</strong> field. Accept the certificate warning if it appears.
+            </GuideStep>
+          </TabsContent>
+          <TabsContent value="macos" className="mt-4 space-y-4">
+            <GuideStep number="1" title="Install Microsoft Windows App">
+              Install <strong>Windows App</strong> (formerly Microsoft Remote Desktop) from the Mac
+              App Store, then open it.
+            </GuideStep>
+            <GuideStep number="2" title="Add a PC">
+              Select <strong>+</strong>, choose <strong>PC</strong>, and enter{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{ipAddress}</code> as the PC
+              name.
+            </GuideStep>
+            <GuideStep number="3" title="Connect and sign in">
+              Save the entry, open it, then enter the VM username and password when prompted. Accept
+              the certificate warning if it appears.
+            </GuideStep>
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function GuideStep({
+  number,
+  title,
+  children,
+}: {
+  number: string;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex gap-3">
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/15 font-medium text-primary text-xs">
+        {number}
+      </span>
+      <div className="space-y-1">
+        <p className="font-medium text-sm">{title}</p>
+        <p className="text-muted-foreground text-sm leading-relaxed">{children}</p>
+      </div>
+    </div>
+  );
+}
+
 async function fetchVmDetail(
   vm: Pick<VirtualMachineDetail, "namespace" | "name">,
   signal: AbortSignal,
@@ -240,7 +336,10 @@ export function VmDetail({ vm: initialVm }: { vm: VirtualMachineDetail }) {
             <h1 className="truncate font-semibold text-2xl tracking-normal">{vm.name}</h1>
             <p className="mt-1 text-muted-foreground text-sm">{vm.namespace}</p>
           </div>
-          <VmActionButtons vm={vm} />
+          <div className="flex flex-wrap items-center gap-2">
+            {vm.name !== "sap-s4hana" ? <HowToUseGuide vm={vm} /> : null}
+            <VmActionButtons vm={vm} />
+          </div>
         </div>
       </header>
 
