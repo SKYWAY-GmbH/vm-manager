@@ -149,7 +149,7 @@ function vmEndpoint(vm: Pick<VirtualMachineDetail, "namespace" | "name">) {
 }
 
 function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
-  const ipAddress = vm.ipAddresses[0] ?? "the VM IP address shown above";
+  const ipAddresses = vm.ipAddresses.length > 0 ? vm.ipAddresses.join(", ") : undefined;
 
   return (
     <Dialog>
@@ -183,8 +183,18 @@ function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
               Search for <strong>Remote Desktop Connection</strong> from the Windows Start menu.
             </GuideStep>
             <GuideStep number="2" title="Enter the VM address">
-              Enter <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{ipAddress}</code> in
-              the PC name field, then select <strong>Connect</strong>.
+              {ipAddresses ? (
+                <>
+                  Enter{" "}
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{ipAddresses}</code> in
+                  the PC name field, then select <strong>Connect</strong>.
+                </>
+              ) : (
+                <>
+                  Enter the VM address shown in the Current state section in the PC name field, then
+                  select <strong>Connect</strong>.
+                </>
+              )}
             </GuideStep>
             <GuideStep number="3" title="Sign in">
               Enter the VM username in the <strong>User name</strong> field and its password in the
@@ -199,8 +209,14 @@ function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
             </GuideStep>
             <GuideStep number="2" title="Add a PC">
               Select <strong>+</strong>, choose <strong>PC</strong>, and enter{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{ipAddress}</code> as the PC
-              name.
+              {ipAddresses ? (
+                <>
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{ipAddresses}</code> as
+                  the PC name.
+                </>
+              ) : (
+                <>the VM address shown in the Current state section as the PC name.</>
+              )}
             </GuideStep>
             <GuideStep number="3" title="Connect and sign in">
               Save the entry, open it, then enter the VM username and password when prompted. Accept
