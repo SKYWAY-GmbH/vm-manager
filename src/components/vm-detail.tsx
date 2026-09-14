@@ -202,7 +202,13 @@ function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
               Search for <strong>Remote Desktop Connection</strong> from the Windows Start menu.
             </GuideStep>
             <GuideStep number="2" title="Enter the VM address">
-              {addressInstructions} Then select <strong>Connect</strong>.
+              {addressInstructions}
+              {ipAddresses.length > 0 ? (
+                <>
+                  {" "}
+                  Then select <strong>Connect</strong>.
+                </>
+              ) : null}
             </GuideStep>
             <GuideStep number="3" title="Sign in">
               Enter the VM username in the <strong>User name</strong> field and its password in the
@@ -216,12 +222,12 @@ function HowToUseGuide({ vm }: { vm: VirtualMachineDetail }) {
               App Store, then open it.
             </GuideStep>
             <GuideStep number="2" title="Add a PC">
-              Select <strong>+</strong>, choose <strong>PC</strong>, and {addressInstructions}
+              Select <strong>+</strong>, choose <strong>PC</strong>. {addressInstructions}
             </GuideStep>
             <GuideStep number="3" title="Connect and sign in">
-              Save the entry, open it, then enter the VM username and password when prompted. Accept
-              If a certificate warning appears, verify the certificate details with your
-              administrator before accepting.
+              Save the entry, open it, then enter the VM username and password when prompted. If a
+              certificate warning appears, verify the certificate details with your administrator
+              before accepting.
             </GuideStep>
           </TabsContent>
         </Tabs>
