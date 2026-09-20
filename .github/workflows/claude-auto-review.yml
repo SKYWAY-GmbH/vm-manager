@@ -1,0 +1,47 @@
+name: Claude automatic review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: arc-skyway
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1.0.216
+        env:
+          ANTHROPIC_BASE_URL: http://192.168.60.63:8317
+        with:
+          anthropic_api_key: ${{ secrets.CLIPROXY_API_KEY }}
+          prompt: |
+            Review this pull request for:
+            - bugs and regressions
+            - security issues
+            - breaking behavior
+            - missing tests
+            - serious performance problems
+
+            Post actionable findings directly to the pull request.
+            Use inline comments for specific code locations.
+            Do not modify files and do not push commits.
+          claude_args: |
+            --model claude-opus-5
+            --max-turns 8
