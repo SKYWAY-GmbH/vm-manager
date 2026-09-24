@@ -15,8 +15,14 @@ concurrency:
 
 jobs:
   review:
-    # Skip fork PRs (secret exposure) and bot PRs such as Dependabot and Renovate.
-    if: github.event.pull_request.head.repo.full_name == github.repository && !endsWith(github.actor, '[bot]')
+    # Only human PRs from this repository: skip forks (secret exposure) and any bot-authored
+    # or bot-triggered PR such as Dependabot and Renovate.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.type != 'Bot' &&
+      !endsWith(github.actor, '[bot]') &&
+      !contains(github.event.pull_request.user.login, 'dependabot') &&
+      !contains(github.event.pull_request.user.login, 'renovate')
     runs-on: arc-skyway
     timeout-minutes: 45
 
@@ -24,7 +30,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Claude review
         uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1.0.216
@@ -33,11 +39,13 @@ jobs:
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ secrets.CLIPROXY_API_KEY }}
+          track_progress: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            The PR branch is already checked out in the current working directory.
+            The PR branch is already checked out with full history. The gh CLI is not installed;
+            read the change with `git diff origin/${{ github.event.pull_request.base.ref }}...HEAD`.
 
             Review this pull request for:
             - bugs and regressions
@@ -46,7 +54,7 @@ jobs:
             - missing tests
             - serious performance problems
 
-            Use `gh pr comment` for one top-level summary.
+            Put the overall summary in your tracking comment.
             Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) for specific code locations.
             Only post GitHub comments; do not submit review text as messages.
             Do not modify files and do not push commits.
@@ -54,4 +62,4 @@ jobs:
             --model claude-opus-5-5
             --effort high
             --max-turns 80
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"
