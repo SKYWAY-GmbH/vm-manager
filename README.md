@@ -91,3 +91,18 @@ Release workflow publishes:
 ```text
 ghcr.io/skyway-gmbh/vm-manager
 ```
+
+Publishing waits up to 30 minutes for successful main push CI on the exact commit.
+If main CI fails, re-run it and then re-run the release workflow.
+Manual builds are only allowed from `main` (published as `sha-<short-commit>`) or a release tag.
+Images expose their tag and commit at `/api/version` without caching. Local builds return `null`
+for unset metadata.
+
+Stable `X.Y.Z` and `vX.Y.Z` tags, pushed or manually dispatched, also run an in-cluster Flux
+rollout check on `arc-skyway`.
+It retries Service DNS/TCP for up to 150 seconds, then waits up to 60 minutes for matching
+version/commit and a successful homepage response. A newer deployed stable version ends the
+check with a warning.
+
+The release scripts use Node 24's built-in TypeScript support and `.mts` files so they run
+without dependencies or changes to the app's module configuration.

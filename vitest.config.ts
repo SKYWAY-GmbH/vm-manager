@@ -13,6 +13,6 @@ export default defineConfig({
       reporter: ["text", "lcov"],
     },
     environment: "node",
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "scripts/**/*.test.mts"],
   },
 });

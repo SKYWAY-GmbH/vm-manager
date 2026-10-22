@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE_NAME: ghcr.io/skyway-gmbh/vm-manager
@@ -18,9 +17,32 @@ jobs:
   publish:
     name: Publish GHCR image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    outputs:
+      version: ${{ steps.gate.outputs.version }}
+      commit: ${{ steps.gate.outputs.commit }}
+      deployable: ${{ steps.gate.outputs.deployable }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          # Node 24 strips TypeScript in .mts without package-wide ESM settings.
+          node-version: 24
+
+      - name: Require successful main CI for this commit
+        id: gate
+        timeout-minutes: 32
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release/ci-gate.mts
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -50,3 +72,34 @@ jobs:
           push: true
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            APP_VERSION=${{ steps.gate.outputs.version }}
+            APP_COMMIT=${{ steps.gate.outputs.commit }}
+
+  smoke:
+    name: Verify Flux rollout
+    needs: publish
+    if: needs.publish.outputs.deployable == 'true'
+    runs-on: arc-skyway
+    timeout-minutes: 70
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout published commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.publish.outputs.commit }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Check Service reachability and deployed version
+        env:
+          # app-template 5.3.0 names the single Service after the Helm release.
+          SERVICE_URL: http://vm-manager.vm-manager.svc.cluster.local:3000
+          EXPECTED_VERSION: ${{ needs.publish.outputs.version }}
+          EXPECTED_COMMIT: ${{ needs.publish.outputs.commit }}
+        run: node scripts/release/rollout-smoke.mts
