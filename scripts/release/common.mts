@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export interface PollDependencies {
@@ -20,11 +21,11 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 // Flux's stable semver policy excludes prereleases and SHA-only dispatch builds.
 export function parseVersion(version: string): bigint[] | null {
-  const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
-  if (match?.[0] !== version) return null;
-  return match ? match.slice(1).map((part) => BigInt(part)) : null;
+  const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?![\s\S])/.exec(version);
+  if (!match) return null;
+  return match.slice(1).map((part) => BigInt(part));
 }
 
 export function isDirectRun(url: string): boolean {
-  return Boolean(process.argv[1] && pathToFileURL(process.argv[1]).href === url);
+  return Boolean(process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === url);
 }

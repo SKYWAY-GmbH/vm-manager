@@ -79,7 +79,7 @@ jobs:
   smoke:
     name: Verify Flux rollout
     needs: publish
-    if: github.event_name == 'push' && needs.publish.outputs.deployable == 'true'
+    if: needs.publish.outputs.deployable == 'true'
     runs-on: arc-skyway
     timeout-minutes: 65
     permissions:

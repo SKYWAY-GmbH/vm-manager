@@ -170,6 +170,18 @@ export async function waitForMainCi(
   throw new Error(`CI gate timed out: ${lastState}; refusing to publish`);
 }
 
+export function releaseMetadata(env: Record<string, string | undefined>, sha: string) {
+  const isTag =
+    (env.GITHUB_EVENT_NAME === "push" || env.GITHUB_EVENT_NAME === "workflow_dispatch") &&
+    env.GITHUB_REF_TYPE === "tag";
+  if (!isTag && env.GITHUB_EVENT_NAME !== "workflow_dispatch") {
+    throw new Error("Expected a tag push or workflow_dispatch");
+  }
+  const version = isTag ? env.GITHUB_REF_NAME : `sha-${sha.slice(0, 7)}`;
+  if (!version || /[\r\n]/.test(version)) throw new Error("Invalid release version");
+  return { version, deployable: isTag && parseVersion(version) !== null };
+}
+
 async function main() {
   if (process.argv.includes("--help")) {
     process.stdout.write(
@@ -178,12 +190,7 @@ async function main() {
     return;
   }
   const sha = execFileSync("git", ["rev-parse", "HEAD^{commit}"], { encoding: "utf8" }).trim();
-  const isTag = process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_TYPE === "tag";
-  if (!isTag && process.env.GITHUB_EVENT_NAME !== "workflow_dispatch") {
-    throw new Error("Expected a tag push or workflow_dispatch");
-  }
-  const version = isTag ? process.env.GITHUB_REF_NAME : `sha-${sha.slice(0, 7)}`;
-  if (!version || /[\r\n]/.test(version)) throw new Error("Invalid release version");
+  const { version, deployable } = releaseMetadata(process.env, sha);
   await waitForMainCi({
     repository: process.env.GITHUB_REPOSITORY ?? "",
     sha,
@@ -193,7 +200,7 @@ async function main() {
   if (!process.env.GITHUB_OUTPUT) throw new Error("GITHUB_OUTPUT is required");
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    `version=${version}\ncommit=${sha}\ndeployable=${isTag && parseVersion(version) !== null}\n`,
+    `version=${version}\ncommit=${sha}\ndeployable=${deployable}\n`,
   );
 }
 

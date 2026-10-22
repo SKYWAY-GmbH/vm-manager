@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { waitForMainCi } from "./ci-gate.mts";
+import { releaseMetadata, waitForMainCi } from "./ci-gate.mts";
 
 const sha = "a".repeat(40);
 const options = {
@@ -39,6 +39,49 @@ function harness() {
     log: vi.fn<(message: string) => void>(),
   };
 }
+
+describe("release metadata", () => {
+  it.each([
+    ["push", "tag", "0.12.0", "0.12.0", true],
+    ["push", "tag", "v0.12.0", "v0.12.0", true],
+    ["push", "tag", "0.12.0-rc.1", "0.12.0-rc.1", false],
+    ["workflow_dispatch", "tag", "0.12.0", "0.12.0", true],
+    ["workflow_dispatch", "branch", "main", "sha-aaaaaaa", false],
+  ])("derives metadata for %s on %s %s", (event, refType, refName, version, deployable) => {
+    expect(
+      releaseMetadata(
+        { GITHUB_EVENT_NAME: event, GITHUB_REF_TYPE: refType, GITHUB_REF_NAME: refName },
+        sha,
+      ),
+    ).toEqual({ version, deployable });
+  });
+
+  it("rejects unsupported events even on tag refs", () => {
+    expect(() =>
+      releaseMetadata(
+        {
+          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_REF_TYPE: "tag",
+          GITHUB_REF_NAME: "0.12.0",
+        },
+        sha,
+      ),
+    ).toThrow("Expected a tag push or workflow_dispatch");
+  });
+
+  it.each(["0.12.0\n", "0.12.0\r\ndeployable=true"])("rejects ref name %j", (refName) => {
+    expect(() =>
+      releaseMetadata(
+        {
+          GITHUB_EVENT_NAME: "workflow_dispatch",
+          GITHUB_REF_TYPE: "tag",
+          GITHUB_REF_NAME: refName,
+        },
+        sha,
+      ),
+    ).toThrow("Invalid release version");
+  });
+});
 
 describe("main CI release gate", () => {
   it("requires successful push CI on main for the exact SHA", async () => {
