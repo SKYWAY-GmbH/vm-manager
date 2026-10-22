@@ -16,6 +16,7 @@ The app has no built-in authentication and contains no secrets. Production acces
 - Lists explicitly managed KubeVirt `VirtualMachine` resources across all namespaces.
 - Shows power state, `printableStatus`, readiness, node, IP addresses, run strategy, and active storage operations.
 - Supports start, graceful stop, reboot, and force stop through the KubeVirt subresource API.
+- Offers a **How to use** guide on VM detail pages (except the S/4HANA VM) with Remote Desktop steps for Windows and macOS.
 - Enforces Manual VM runtime timers with resettable 1-7 day and 30-day durations.
 - Supports custom-named Longhorn rootdisk snapshots and backups.
 - Shows fast Longhorn snapshots and Longhorn backups separately, including recurring backups.
