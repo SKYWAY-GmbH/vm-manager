@@ -16,6 +16,54 @@ interface SmokeOptions {
   intervalMs?: number;
 }
 
+async function readDeployedVersion(
+  options: SmokeOptions,
+  deps: PollDependencies,
+  deadline: number,
+): Promise<{ version: string | null; commit: string | null }> {
+  const response = await deps.fetch(new URL("/api/version", options.baseUrl), {
+    cache: "no-store",
+    redirect: "error",
+    signal: AbortSignal.timeout(Math.min(10_000, deadline - deps.now())),
+  });
+  if (!response.ok) throw new Error(`version HTTP ${response.status}`);
+  const body: unknown = await response.json();
+  if (deps.now() >= deadline) throw new Error("deadline reached during version check");
+  if (
+    !isRecord(body) ||
+    !(body.version === null || typeof body.version === "string") ||
+    !(body.commit === null || typeof body.commit === "string")
+  ) {
+    throw new Error("invalid version JSON");
+  }
+  return { version: body.version, commit: body.commit };
+}
+
+function isNewerVersion(version: string | null, expected: bigint[]): boolean {
+  const deployed = typeof version === "string" ? parseVersion(version) : null;
+  const difference = deployed?.findIndex((part, index) => part !== expected[index]) ?? -1;
+  return Boolean(deployed && difference >= 0 && deployed[difference] > expected[difference]);
+}
+
+async function checkHomepage(
+  baseUrl: string,
+  observed: string,
+  deps: PollDependencies,
+  deadline: number,
+): Promise<number> {
+  const remaining = deadline - deps.now();
+  if (remaining <= 0) throw new Error("deadline reached before homepage check");
+  const home = await deps.fetch(new URL("/", baseUrl), {
+    cache: "no-store",
+    redirect: "manual",
+    signal: AbortSignal.timeout(Math.min(10_000, remaining)),
+  });
+  if (!home.ok) throw new Error(`matching ${observed}, homepage HTTP ${home.status}`);
+  await home.body?.cancel();
+  if (deps.now() >= deadline) throw new Error("deadline reached during homepage check");
+  return home.status;
+}
+
 export async function waitForRollout(
   options: SmokeOptions,
   overrides: Partial<PollDependencies> = {},
@@ -29,42 +77,17 @@ export async function waitForRollout(
   let lastState = "unavailable: no response";
   while (deps.now() < deadline) {
     try {
-      const response = await deps.fetch(new URL("/api/version", options.baseUrl), {
-        cache: "no-store",
-        redirect: "error",
-        signal: AbortSignal.timeout(Math.min(10_000, deadline - deps.now())),
-      });
-      if (!response.ok) throw new Error(`version HTTP ${response.status}`);
-      const body: unknown = await response.json();
-      if (deps.now() >= deadline) throw new Error("deadline reached during version check");
-      if (
-        !isRecord(body) ||
-        !(body.version === null || typeof body.version === "string") ||
-        !(body.commit === null || typeof body.commit === "string")
-      ) {
-        throw new Error("invalid version JSON");
-      }
+      const body = await readDeployedVersion(options, deps, deadline);
       const observed = `version=${JSON.stringify(body.version)}, commit=${JSON.stringify(body.commit)}`;
-      const deployed = typeof body.version === "string" ? parseVersion(body.version) : null;
-      const difference = deployed?.findIndex((part, index) => part !== expected[index]) ?? -1;
-      if (deployed && difference >= 0 && deployed[difference] > expected[difference]) {
+      if (isNewerVersion(body.version, expected)) {
         deps.log(
           `::warning::Release ${options.version} superseded by ${observed}; ending smoke check`,
         );
         return "superseded";
       }
       if (body.version === options.version && body.commit === options.commit) {
-        const remaining = deadline - deps.now();
-        if (remaining <= 0) throw new Error("deadline reached before homepage check");
-        const home = await deps.fetch(new URL("/", options.baseUrl), {
-          cache: "no-store",
-          redirect: "manual",
-          signal: AbortSignal.timeout(Math.min(10_000, remaining)),
-        });
-        if (!home.ok) throw new Error(`matching ${observed}, homepage HTTP ${home.status}`);
-        await home.body?.cancel();
-        if (deps.now() >= deadline) throw new Error("deadline reached during homepage check");
-        deps.log(`Rollout matched ${observed}; GET / returned ${home.status}`);
+        const status = await checkHomepage(options.baseUrl, observed, deps, deadline);
+        deps.log(`Rollout matched ${observed}; GET / returned ${status}`);
         return "match";
       }
       lastState = `stale: ${observed}`;
@@ -173,8 +196,10 @@ async function main() {
 }
 
 if (isDirectRun(import.meta.url)) {
-  main().catch((error: unknown) => {
+  try {
+    await main();
+  } catch (error) {
     console.error(error instanceof Error ? error.message : "Rollout smoke check failed");
     process.exitCode = 1;
-  });
+  }
 }

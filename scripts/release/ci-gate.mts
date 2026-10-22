@@ -52,6 +52,71 @@ function parseRun(value: unknown, sha: string): Run {
   return value as unknown as Run;
 }
 
+async function fetchRunPage(
+  options: GateOptions,
+  deps: PollDependencies,
+  deadline: number,
+  page: number,
+): Promise<{ total: number; runs: unknown[] }> {
+  const remaining = deadline - deps.now();
+  if (remaining <= 0) throw new Error("CI gate timed out while listing runs");
+  const url = new URL(
+    `/repos/${options.repository}/actions/workflows/ci.yml/runs`,
+    options.apiUrl ?? "https://api.github.com",
+  );
+  url.search = new URLSearchParams({
+    head_sha: options.sha,
+    event: "push",
+    branch: "main",
+    per_page: "100",
+    page: String(page),
+  }).toString();
+  let response: Response;
+  try {
+    response = await deps.fetch(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${options.token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal: AbortSignal.timeout(Math.min(10_000, remaining)),
+    });
+  } catch {
+    throw new TransientApiError("CI API network error or request timeout");
+  }
+  if (!response.ok) {
+    const message = `CI API HTTP ${response.status}`;
+    if (response.status === 429 || response.status >= 500) {
+      throw new TransientApiError(message);
+    }
+    throw new Error(`${message}; refusing to publish`);
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error("Malformed CI API JSON; refusing to publish");
+    }
+    throw new TransientApiError("CI API response interrupted or timed out");
+  }
+  if (
+    !isRecord(body) ||
+    !Number.isSafeInteger(body.total_count) ||
+    Number(body.total_count) < 0 ||
+    Number(body.total_count) >= 1000 ||
+    !Array.isArray(body.workflow_runs) ||
+    body.workflow_runs.length > 100 ||
+    body.workflow_runs.length > Number(body.total_count)
+  ) {
+    throw new Error("Malformed or truncated CI API response; refusing to publish");
+  }
+  return {
+    total: Number(body.total_count),
+    runs: body.workflow_runs,
+  };
+}
+
 async function newestRun(
   options: GateOptions,
   deps: PollDependencies,
@@ -61,73 +126,21 @@ async function newestRun(
   let pages = 1;
   let total: number | undefined;
   for (let page = 1; page <= pages; page++) {
-    const remaining = deadline - deps.now();
-    if (remaining <= 0) throw new Error("CI gate timed out while listing runs");
-    const url = new URL(
-      `/repos/${options.repository}/actions/workflows/ci.yml/runs`,
-      options.apiUrl ?? "https://api.github.com",
-    );
-    url.search = new URLSearchParams({
-      head_sha: options.sha,
-      event: "push",
-      branch: "main",
-      per_page: "100",
-      page: String(page),
-    }).toString();
-    let response: Response;
-    try {
-      response = await deps.fetch(url, {
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${options.token}`,
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-        signal: AbortSignal.timeout(Math.min(10_000, remaining)),
-      });
-    } catch {
-      throw new TransientApiError("CI API network error or request timeout");
-    }
-    if (!response.ok) {
-      const message = `CI API HTTP ${response.status}`;
-      if (response.status === 429 || response.status >= 500) {
-        throw new TransientApiError(message);
-      }
-      throw new Error(`${message}; refusing to publish`);
-    }
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        throw new Error("Malformed CI API JSON; refusing to publish");
-      }
-      throw new TransientApiError("CI API response interrupted or timed out");
-    }
-    if (
-      !isRecord(body) ||
-      !Number.isSafeInteger(body.total_count) ||
-      Number(body.total_count) < 0 ||
-      Number(body.total_count) >= 1000 ||
-      !Array.isArray(body.workflow_runs) ||
-      body.workflow_runs.length > 100 ||
-      body.workflow_runs.length > Number(body.total_count)
-    ) {
-      throw new Error("Malformed or truncated CI API response; refusing to publish");
-    }
+    const result = await fetchRunPage(options, deps, deadline, page);
     if (page === 1) {
-      total = Number(body.total_count);
+      total = result.total;
       pages = Math.max(1, Math.ceil(total / 100));
     }
-    if (body.total_count !== total) {
+    if (result.total !== total) {
       throw new Error("CI run list changed during pagination; refusing to publish");
     }
-    runs.push(...body.workflow_runs.map((run) => parseRun(run, options.sha)));
+    runs.push(...result.runs.map((run) => parseRun(run, options.sha)));
   }
   if (runs.length !== total) {
     throw new Error("Malformed or incomplete CI API response; refusing to publish");
   }
   // Newest creation wins, then run ID, then attempt. Re-runs replace that run's state.
-  return runs.sort(
+  return runs.toSorted(
     (a, b) =>
       Date.parse(b.created_at) - Date.parse(a.created_at) ||
       b.id - a.id ||
@@ -135,30 +148,39 @@ async function newestRun(
   )[0];
 }
 
-export async function waitForMainCi(
-  options: GateOptions,
-  overrides: Partial<PollDependencies> = {},
-): Promise<void> {
+function validateGateOptions(options: GateOptions): void {
   if (!/^[a-f0-9]{40}$/.test(options.sha) || !/^[\w.-]+\/[\w.-]+$/.test(options.repository)) {
     throw new Error("Invalid commit SHA or repository");
   }
   if (!options.token) throw new Error("GITHUB_TOKEN is required");
+}
+
+function runState(run: Run | undefined, sha: string): string {
+  if (!run) {
+    return `no main push CI run for ${sha} yet (only the head commit of a push to main gets a CI run)`;
+  }
+  const state = `CI run ${run.id}, attempt ${run.run_attempt}: ${run.status}/${run.conclusion}`;
+  if (run.status === "completed" && run.conclusion !== "success") {
+    throw new Error(`${state}; refusing to publish`);
+  }
+  return state;
+}
+
+export async function waitForMainCi(
+  options: GateOptions,
+  overrides: Partial<PollDependencies> = {},
+): Promise<void> {
+  validateGateOptions(options);
   const deps = { ...dependencies, ...overrides };
   const deadline = deps.now() + (options.timeoutMs ?? 30 * 60_000);
-  let lastState = "no matching CI run";
+  let lastState = runState(undefined, options.sha);
   while (deps.now() < deadline) {
     try {
       const run = await newestRun(options, deps, deadline);
-      lastState = "no matching CI run";
-      if (run) {
-        lastState = `CI run ${run.id}, attempt ${run.run_attempt}: ${run.status}/${run.conclusion}`;
-        if (run.status === "completed" && run.conclusion !== "success") {
-          throw new Error(`${lastState}; refusing to publish`);
-        }
-        if (run.status === "completed" && deps.now() < deadline) {
-          deps.log(`${lastState}; main push CI passed for exact commit ${options.sha}`);
-          return;
-        }
+      lastState = runState(run, options.sha);
+      if (run?.status === "completed" && deps.now() < deadline) {
+        deps.log(`${lastState}; main push CI passed for exact commit ${options.sha}`);
+        return;
       }
     } catch (error) {
       if (!(error instanceof TransientApiError)) throw error;
@@ -171,6 +193,13 @@ export async function waitForMainCi(
 }
 
 export function releaseMetadata(env: Record<string, string | undefined>, sha: string) {
+  if (
+    env.GITHUB_EVENT_NAME === "workflow_dispatch" &&
+    env.GITHUB_REF_TYPE === "branch" &&
+    env.GITHUB_REF_NAME !== "main"
+  ) {
+    throw new Error("Manual builds are only allowed from main or a release tag");
+  }
   const isTag =
     (env.GITHUB_EVENT_NAME === "push" || env.GITHUB_EVENT_NAME === "workflow_dispatch") &&
     env.GITHUB_REF_TYPE === "tag";
@@ -205,8 +234,10 @@ async function main() {
 }
 
 if (isDirectRun(import.meta.url)) {
-  main().catch((error: unknown) => {
+  try {
+    await main();
+  } catch (error) {
     console.error(error instanceof Error ? error.message : "CI gate failed");
     process.exitCode = 1;
-  });
+  }
 }

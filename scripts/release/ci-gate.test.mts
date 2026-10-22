@@ -69,6 +69,19 @@ describe("release metadata", () => {
     ).toThrow("Expected a tag push or workflow_dispatch");
   });
 
+  it("rejects manual builds from a feature branch immediately", () => {
+    expect(() =>
+      releaseMetadata(
+        {
+          GITHUB_EVENT_NAME: "workflow_dispatch",
+          GITHUB_REF_TYPE: "branch",
+          GITHUB_REF_NAME: "feature/release",
+        },
+        sha,
+      ),
+    ).toThrow("Manual builds are only allowed from main or a release tag");
+  });
+
   it.each(["0.12.0\n", "0.12.0\r\ndeployable=true"])("rejects ref name %j", (refName) => {
     expect(() =>
       releaseMetadata(
@@ -110,7 +123,11 @@ describe("main CI release gate", () => {
   it("waits for a missing run, then times out", async () => {
     const deps = harness();
     deps.fetch.mockImplementation(async () => runs());
-    await expect(waitForMainCi(options, deps)).rejects.toThrow("timed out: no matching CI run");
+    const state = `no main push CI run for ${sha} yet (only the head commit of a push to main gets a CI run)`;
+    await expect(waitForMainCi(options, deps)).rejects.toThrow(
+      `CI gate timed out: ${state}; refusing to publish`,
+    );
+    expect(deps.log).toHaveBeenCalledWith(`Waiting for main push CI for ${sha}: ${state}`);
     expect(deps.now()).toBe(30);
     expect(deps.fetch).toHaveBeenCalledTimes(3);
   });

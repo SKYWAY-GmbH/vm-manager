@@ -23,7 +23,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseVersion(version: string): bigint[] | null {
   const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?![\s\S])/.exec(version);
   if (!match) return null;
-  return match.slice(1).map((part) => BigInt(part));
+  return match.slice(1).map(BigInt);
 }
 
 export function isDirectRun(url: string): boolean {

@@ -93,8 +93,10 @@ ghcr.io/skyway-gmbh/vm-manager
 ```
 
 Publishing waits up to 30 minutes for successful main push CI on the exact commit.
-Images expose their tag and commit at `/api/version` without caching. Branch dispatch builds use
-`sha-<short-commit>`; local builds return `null` for unset metadata.
+If main CI fails, re-run it and then re-run the release workflow.
+Manual builds are only allowed from `main` (published as `sha-<short-commit>`) or a release tag.
+Images expose their tag and commit at `/api/version` without caching. Local builds return `null`
+for unset metadata.
 
 Stable `X.Y.Z` and `vX.Y.Z` tags, pushed or manually dispatched, also run an in-cluster Flux
 rollout check on `arc-skyway`.

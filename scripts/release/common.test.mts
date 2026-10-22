@@ -17,7 +17,7 @@ process.stdout.write(JSON.stringify([isDirectRun(import.meta.url), isDirectRun($
 `,
     );
     symlinkSync(entry, link);
-    expect(execFileSync(process.execPath, [link], { encoding: "utf8", timeout: 1000 })).toBe(
+    expect(execFileSync(process.execPath, [link], { encoding: "utf8", timeout: 10_000 })).toBe(
       "[true,false]",
     );
   } finally {

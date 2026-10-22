@@ -81,7 +81,7 @@ jobs:
     needs: publish
     if: needs.publish.outputs.deployable == 'true'
     runs-on: arc-skyway
-    timeout-minutes: 65
+    timeout-minutes: 70
     permissions:
       contents: read
     steps:
