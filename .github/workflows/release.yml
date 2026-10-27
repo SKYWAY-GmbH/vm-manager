@@ -12,6 +12,8 @@ permissions:
 
 env:
   IMAGE_NAME: ghcr.io/skyway-gmbh/vm-manager
+  # Skip docker/build-push-action's build-record artifact; it only fills the org's Actions storage.
+  DOCKER_BUILD_RECORD_UPLOAD: false
 
 jobs:
   publish:
